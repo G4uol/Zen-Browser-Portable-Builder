@@ -2,14 +2,14 @@ name: Build Zen Browser Portable
 
 on:
   schedule:
-    - cron: '0 2 * * *' # 每天自动检查更新
+    - cron: '0 2 * * *' # 每天自动运行
   workflow_dispatch: # 允许手动触发
 
 jobs:
   build:
     runs-on: windows-latest
     permissions:
-      contents: write # 必须权限：允许发布 Release
+      contents: write # 必须权限：允许发布/删除/修改 Release
 
     steps:
     - name: Checkout code
@@ -19,10 +19,11 @@ jobs:
       id: download
       shell: powershell
       env:
+        # 必须传入 Token 否则会被限流报错
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
-        # 1. 获取 GitHub API (带 Token 防止限流)
         $url = "https://api.github.com/repos/zen-browser/desktop/releases?per_page=5"
+        # 关键：带上 Authorization 头
         $headers = @{ "Authorization" = "token $env:GH_TOKEN" }
         
         try {
@@ -35,10 +36,10 @@ jobs:
         $downloadUrl = ""
         $version = ""
 
-        # 2. 遍历发布版本，寻找 zen.installer.exe
+        # 遍历版本，精确寻找 zen.installer.exe
         foreach ($release in $releases) {
             foreach ($asset in $release.assets) {
-                # === 核心修改：精确匹配文件名 ===
+                # 精确匹配文件名，绝不下载 arm64 或其他杂文件
                 if ($asset.name -eq "zen.installer.exe") {
                     $downloadUrl = $asset.browser_download_url
                     $version = $release.tag_name
@@ -56,68 +57,42 @@ jobs:
         Write-Host "Target Version: $version"
         Write-Host "Download URL: $downloadUrl"
         
-        # 3. 下载文件
         Invoke-WebRequest -Uri $downloadUrl -OutFile "zen_installer.exe"
-        
-        # 4. 输出变量
         echo "VERSION=$version" >> $env:GITHUB_OUTPUT
 
-    - name: Check if Release Exists
-      id: check_release
-      shell: powershell
-      env:
-        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      run: |
-        $tag = "${{ steps.download.outputs.VERSION }}"
-        try {
-            gh release view $tag
-            echo "EXISTS=true" >> $env:GITHUB_OUTPUT
-            Write-Host "Release $tag already exists. Skipping build."
-        } catch {
-            echo "EXISTS=false" >> $env:GITHUB_OUTPUT
-            Write-Host "New version found ($tag). Starting build."
-        }
+    # --- 总是构建 ---
 
-    - name: Extract Installer (Using 7-Zip)
-      if: steps.check_release.outputs.EXISTS == 'false'
+    - name: Extract Installer (7-Zip)
       shell: powershell
       run: |
-        # 创建标准目录结构
         New-Item -ItemType Directory -Force -Path "ZenBrowserPortable\App\ZenBrowser"
         New-Item -ItemType Directory -Force -Path "ZenBrowserPortable\App\AppInfo"
         New-Item -ItemType Directory -Force -Path "ZenBrowserPortable\Data"
         
-        # 使用 7-Zip 强行解压 exe 安装包
-        # -o 指定输出目录, -y 自动确认
+        # 解压安装包
         7z x "zen_installer.exe" -o"TempExtract" -y
         
-        # 处理安装包结构：安装包解压后通常都在 'core' 文件夹里
+        # 移动 core 文件夹内容
         $corePath = "TempExtract\core"
-        
         if (Test-Path $corePath) {
-            Write-Host "Found 'core' folder, moving files..."
             Move-Item "$corePath\*" "ZenBrowserPortable\App\ZenBrowser"
         } else {
-            # 如果结构变了，尝试全量移动并寻找 zen.exe
-            Write-Host "'core' folder not found, attempting heuristic move..."
+            # 兜底：如果结构变了，寻找 zen.exe
             $zenExe = Get-ChildItem -Path "TempExtract" -Filter "zen.exe" -Recurse | Select-Object -First 1
             if ($zenExe) {
                 Move-Item "$($zenExe.DirectoryName)\*" "ZenBrowserPortable\App\ZenBrowser"
             } else {
-                Write-Error "Extraction failed: zen.exe not found in installer."
+                Write-Error "Extraction failed: zen.exe not found."
                 exit 1
             }
         }
 
     - name: Compile Launcher
-      if: steps.check_release.outputs.EXISTS == 'false'
       shell: cmd
       run: |
-        :: 复制配置文件
         copy appinfo.ini ZenBrowserPortable\App\AppInfo\
         if exist appicon.ico copy appicon.ico ZenBrowserPortable\App\AppInfo\
         
-        :: 使用 .NET 编译器生成启动器
         set CSC=%windir%\Microsoft.NET\Framework64\v4.0.30319\csc.exe
         
         if exist appicon.ico (
@@ -127,7 +102,6 @@ jobs:
         )
 
     - name: Package to ZIP
-      if: steps.check_release.outputs.EXISTS == 'false'
       shell: powershell
       run: |
         $ver = "${{ steps.download.outputs.VERSION }}"
@@ -135,8 +109,7 @@ jobs:
         Compress-Archive -Path "ZenBrowserPortable" -DestinationPath $zipName
         echo "ZIP_NAME=$zipName" >> $env:GITHUB_OUTPUT
 
-    - name: Upload Release
-      if: steps.check_release.outputs.EXISTS == 'false'
+    - name: Upload Release (Force Update)
       uses: softprops/action-gh-release@v1
       with:
         tag_name: ${{ steps.download.outputs.VERSION }}
@@ -144,6 +117,8 @@ jobs:
         files: ${{ steps.package.outputs.ZIP_NAME }}
         body: |
           Auto-generated Portable Version.
-          Source: zen.installer.exe from ${{ steps.download.outputs.VERSION }}
+          Source: zen.installer.exe (v${{ steps.download.outputs.VERSION }})
+        draft: false
+        prerelease: false
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
