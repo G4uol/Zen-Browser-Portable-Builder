@@ -2,14 +2,14 @@ name: Build Zen Browser Portable
 
 on:
   schedule:
-    - cron: '0 2 * * *' # 每天自动运行
+    - cron: '0 2 * * *' # 每天运行
   workflow_dispatch: # 允许手动触发
 
 jobs:
   build:
     runs-on: windows-latest
     permissions:
-      contents: write # 必须权限：允许发布/删除/修改 Release
+      contents: write # 读写权限
 
     steps:
     - name: Checkout code
@@ -19,11 +19,10 @@ jobs:
       id: download
       shell: powershell
       env:
-        # 必须传入 Token 否则会被限流报错
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
+        # 1. 获取发布列表
         $url = "https://api.github.com/repos/zen-browser/desktop/releases?per_page=5"
-        # 关键：带上 Authorization 头
         $headers = @{ "Authorization" = "token $env:GH_TOKEN" }
         
         try {
@@ -36,10 +35,9 @@ jobs:
         $downloadUrl = ""
         $version = ""
 
-        # 遍历版本，精确寻找 zen.installer.exe
+        # 2. 精确寻找 zen.installer.exe
         foreach ($release in $releases) {
             foreach ($asset in $release.assets) {
-                # 精确匹配文件名，绝不下载 arm64 或其他杂文件
                 if ($asset.name -eq "zen.installer.exe") {
                     $downloadUrl = $asset.browser_download_url
                     $version = $release.tag_name
@@ -50,17 +48,17 @@ jobs:
         }
 
         if (-not $downloadUrl) {
-            Write-Error "Could not find 'zen.installer.exe' in recent releases."
+            Write-Error "Could not find 'zen.installer.exe'!"
             exit 1
         }
 
-        Write-Host "Target Version: $version"
-        Write-Host "Download URL: $downloadUrl"
+        Write-Host "Target: $version"
+        Write-Host "URL: $downloadUrl"
         
         Invoke-WebRequest -Uri $downloadUrl -OutFile "zen_installer.exe"
         echo "VERSION=$version" >> $env:GITHUB_OUTPUT
 
-    # --- 总是构建 ---
+    # --- 移除了“Check if Release Exists”步骤，强制往下执行 ---
 
     - name: Extract Installer (7-Zip)
       shell: powershell
@@ -72,18 +70,15 @@ jobs:
         # 解压安装包
         7z x "zen_installer.exe" -o"TempExtract" -y
         
-        # 移动 core 文件夹内容
+        # 提取 core 文件夹
         $corePath = "TempExtract\core"
         if (Test-Path $corePath) {
             Move-Item "$corePath\*" "ZenBrowserPortable\App\ZenBrowser"
         } else {
-            # 兜底：如果结构变了，寻找 zen.exe
+            # 备用方案
             $zenExe = Get-ChildItem -Path "TempExtract" -Filter "zen.exe" -Recurse | Select-Object -First 1
             if ($zenExe) {
                 Move-Item "$($zenExe.DirectoryName)\*" "ZenBrowserPortable\App\ZenBrowser"
-            } else {
-                Write-Error "Extraction failed: zen.exe not found."
-                exit 1
             }
         }
 
@@ -115,9 +110,6 @@ jobs:
         tag_name: ${{ steps.download.outputs.VERSION }}
         name: Zen Browser Portable ${{ steps.download.outputs.VERSION }}
         files: ${{ steps.package.outputs.ZIP_NAME }}
-        body: |
-          Auto-generated Portable Version.
-          Source: zen.installer.exe (v${{ steps.download.outputs.VERSION }})
         draft: false
         prerelease: false
       env:
