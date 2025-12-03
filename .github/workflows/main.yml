@@ -1,0 +1,144 @@
+name: Build Zen Browser Portable
+
+on:
+  schedule:
+    - cron: '0 2 * * *' # 每天 UTC 时间凌晨 2 点自动运行 (北京时间上午 10 点)
+  workflow_dispatch: # 允许手动点按钮触发
+
+jobs:
+  build:
+    runs-on: windows-latest
+    permissions:
+      contents: write # 允许发布 Release
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Find and Download Latest Zen Browser
+      id: download
+      shell: powershell
+      run: |
+        # 1. 获取 GitHub API 数据 (获取最新发布的 5 个版本以防万一)
+        $url = "https://api.github.com/repos/zen-browser/desktop/releases?per_page=5"
+        $releases = Invoke-RestMethod -Uri $url -Method Get
+
+        # 2. 寻找符合条件的文件 (Win x64, Installer 或 Zip)
+        $downloadUrl = ""
+        $version = ""
+        
+        foreach ($release in $releases) {
+            foreach ($asset in $release.assets) {
+                $name = $asset.name.ToLower()
+                # 排除 arm64, 必须是 exe 或 zip, 必须包含 win
+                if (($name -match ".exe" -or $name -match ".zip") -and $name -match "win" -and $name -notmatch "arm64" -and $name -notmatch "aarch64") {
+                    $downloadUrl = $asset.browser_download_url
+                    $version = $release.tag_name
+                    break
+                }
+            }
+            if ($downloadUrl) { break }
+        }
+
+        if (-not $downloadUrl) {
+            Write-Error "Could not find a suitable Windows x64 release."
+            exit 1
+        }
+
+        Write-Host "Found Version: $version"
+        Write-Host "URL: $downloadUrl"
+        
+        # 3. 下载
+        $outputFile = "zen_setup.exe"
+        if ($downloadUrl.EndsWith(".zip")) { $outputFile = "zen_setup.zip" }
+        Invoke-WebRequest -Uri $downloadUrl -OutFile $outputFile
+        
+        # 设置输出变量供后续步骤使用
+        echo "VERSION=$version" >> $env:GITHUB_OUTPUT
+        echo "SETUP_FILE=$outputFile" >> $env:GITHUB_OUTPUT
+
+    - name: Check if Release Exists
+      id: check_release
+      shell: powershell
+      run: |
+        $tag = "${{ steps.download.outputs.VERSION }}"
+        try {
+            gh release view $tag
+            echo "EXISTS=true" >> $env:GITHUB_OUTPUT
+            Write-Host "Release $tag already exists. Skipping."
+        } catch {
+            echo "EXISTS=false" >> $env:GITHUB_OUTPUT
+            Write-Host "Release $tag does not exist. Proceeding."
+        }
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Extract Zen Browser
+      if: steps.check_release.outputs.EXISTS == 'false'
+      shell: powershell
+      run: |
+        # 创建目录
+        New-Item -ItemType Directory -Force -Path "ZenBrowserPortable\App\ZenBrowser"
+        New-Item -ItemType Directory -Force -Path "ZenBrowserPortable\App\AppInfo"
+        New-Item -ItemType Directory -Force -Path "ZenBrowserPortable\Data"
+        
+        # 使用 7-Zip 解压 (GitHub Runner 自带 7z)
+        $file = "${{ steps.download.outputs.SETUP_FILE }}"
+        $dest = "TempExtract"
+        7z x $file -o$dest -y
+        
+        # 智能移动文件：寻找 core 文件夹或直接移动
+        $corePath = "$dest\core"
+        if (Test-Path $corePath) {
+            Move-Item "$corePath\*" "ZenBrowserPortable\App\ZenBrowser"
+        } else {
+            # 如果没有 core，可能是 zip 包，尝试找 zen.exe 所在的文件夹
+            $zenExe = Get-ChildItem -Path $dest -Filter "zen.exe" -Recurse | Select-Object -First 1
+            if ($zenExe) {
+                $parent = $zenExe.DirectoryName
+                Move-Item "$parent\*" "ZenBrowserPortable\App\ZenBrowser"
+            } else {
+                 # 实在找不到，就把解压出来的所有东西放进去
+                 Move-Item "$dest\*" "ZenBrowserPortable\App\ZenBrowser"
+            }
+        }
+
+    - name: Compile Launcher
+      if: steps.check_release.outputs.EXISTS == 'false'
+      shell: cmd
+      run: |
+        :: 复制配置文件
+        copy appinfo.ini ZenBrowserPortable\App\AppInfo\
+        if exist appicon.ico copy appicon.ico ZenBrowserPortable\App\AppInfo\
+        
+        :: 编译 C#
+        set CSC=%windir%\Microsoft.NET\Framework64\v4.0.30319\csc.exe
+        
+        :: 如果有图标就带图标编译，没有就普通编译
+        if exist appicon.ico (
+            "%CSC%" /target:exe /out:ZenBrowserPortable\ZenBrowserPortable.exe /win32icon:appicon.ico /r:System.Windows.Forms.dll Launcher.cs
+        ) else (
+            "%CSC%" /target:exe /out:ZenBrowserPortable\ZenBrowserPortable.exe /r:System.Windows.Forms.dll Launcher.cs
+        )
+
+    - name: Package Portable App
+      if: steps.check_release.outputs.EXISTS == 'false'
+      shell: powershell
+      run: |
+        $ver = "${{ steps.download.outputs.VERSION }}"
+        $zipName = "ZenBrowserPortable_$ver.zip"
+        Compress-Archive -Path "ZenBrowserPortable" -DestinationPath $zipName
+        echo "ZIP_NAME=$zipName" >> $env:GITHUB_OUTPUT
+
+    - name: Create Release
+      if: steps.check_release.outputs.EXISTS == 'false'
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: ${{ steps.download.outputs.VERSION }}
+        name: Zen Browser Portable ${{ steps.download.outputs.VERSION }}
+        files: ${{ steps.package.outputs.ZIP_NAME }}
+        body: |
+          Automatic build of Zen Browser Portable.
+          Based on official release: ${{ steps.download.outputs.VERSION }}
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
