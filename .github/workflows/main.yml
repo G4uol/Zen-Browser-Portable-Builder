@@ -23,8 +23,13 @@ jobs:
       run: |
         $url = "https://api.github.com/repos/zen-browser/desktop/releases?per_page=5"
         $headers = @{ "Authorization" = "token $env:GH_TOKEN" }
-        $releases = Invoke-RestMethod -Uri $url -Method Get -Headers $headers
-        
+        try {
+            $releases = Invoke-RestMethod -Uri $url -Method Get -Headers $headers
+        } catch {
+            Write-Error "API Error: $($_.Exception.Message)"
+            exit 1
+        }
+
         $downloadUrl = ""
         $version = ""
         foreach ($release in $releases) {
@@ -39,7 +44,6 @@ jobs:
         }
 
         if (-not $downloadUrl) { Write-Error "Target Not Found"; exit 1 }
-        
         Write-Host "Target: $version"
         Invoke-WebRequest -Uri $downloadUrl -OutFile "zen_installer.exe"
         echo "VERSION=$version" >> $env:GITHUB_OUTPUT
@@ -51,9 +55,10 @@ jobs:
         New-Item -ItemType Directory -Force -Path "ZenBrowserPortable\App\ZenBrowser"
         New-Item -ItemType Directory -Force -Path "ZenBrowserPortable\App\AppInfo"
         New-Item -ItemType Directory -Force -Path "ZenBrowserPortable\Data"
+        # 创建空目录消除 Warning
+        New-Item -ItemType Directory -Force -Path "ZenBrowserPortable\Other\Source"
         
         7z x "zen_installer.exe" -o"TempExtract" -y
-        
         if (Test-Path "TempExtract\core") {
             Move-Item "TempExtract\core\*" "ZenBrowserPortable\App\ZenBrowser"
         } else {
@@ -75,9 +80,15 @@ jobs:
 
         $safeVer = $ver -replace "[^0-9.]", ""
         while (($safeVer.ToCharArray() | Where-Object { $_ -eq '.' }).Count -lt 3) { $safeVer += ".0" }
-        (Get-Content "appinfo.ini") -replace "PackageVersion=1.0.0.0", "PackageVersion=$safeVer" `
-                                    -replace "DisplayVersion=Latest", "DisplayVersion=$ver" `
-                                    | Set-Content "ZenBrowserPortable\App\AppInfo\appinfo.ini"
+        
+        $iniPath = "ZenBrowserPortable\App\AppInfo\appinfo.ini"
+        $content = Get-Content "appinfo.ini"
+        $content = $content -replace "PackageVersion=1.0.0.0", "PackageVersion=$safeVer"
+        $content = $content -replace "DisplayVersion=Latest", "DisplayVersion=$ver"
+        if ($content -notcontains "CommercialUse=true") {
+            $content = $content -replace "\[License\]", "[License]`r`nCommercialUse=true"
+        }
+        Set-Content -Path $iniPath -Value $content
 
     # 4. 创建 help.html
     - name: Create Help File
@@ -109,53 +120,72 @@ jobs:
         }
         Copy-Item $icoPath "$destDir\appicon.ico" -Force
 
-    # === 7. 解压 ZIP 并打包 ===
+    # 7. 解压并准备环境 (搬家到 C:\B 避开长路径)
+    - name: Prepare Build Environment
+      shell: powershell
+      run: |
+        if (-not (Test-Path "InstallerTool.zip")) { Write-Error "InstallerTool.zip missing!"; exit 1 }
+        
+        # 创建工作目录 C:\B
+        New-Item -ItemType Directory -Force -Path "C:\B"
+        
+        # 解压工具到 C:\B\Tool
+        7z x "InstallerTool.zip" -o"C:\B\Tool" -y
+        
+        # 移动 ZenBrowserPortable 到 C:\B\ZenBrowserPortable
+        Move-Item "ZenBrowserPortable" "C:\B\ZenBrowserPortable"
+        
+        Write-Host "Files moved to C:\B"
+
+    # === 8. 执行打包 (超时延长至 20 分钟) ===
     - name: Build .paf.exe Package
       shell: powershell
       run: |
-        # 1. 解压InstallerTool.zip
-        if (-not (Test-Path "InstallerTool.zip")) { Write-Error "ZIP missing!"; exit 1 }
-        7z x "InstallerTool.zip" -y
-        
-        # 2. 核心修正：自动搜寻 PortableApps.comInstaller.exe 到底在哪
-        # 不再硬编码路径，而是全盘搜索解压出来的文件夹
-        $pafExe = Get-ChildItem -Path . -Filter "PortableApps.comInstaller.exe" -Recurse | Select-Object -First 1
+        # 自动搜寻 exe
+        $pafExe = Get-ChildItem -Path "C:\B\Tool" -Filter "PortableApps.comInstaller.exe" -Recurse | Select-Object -First 1
         
         if (-not $pafExe) { 
-            Write-Error "FATAL: Installer EXE not found after unzip!"
+            Write-Error "FATAL: InstallerTool EXE not found!"
             exit 1 
         }
         
         $builderPath = $pafExe.FullName
-        $sourcePath = "$PWD\ZenBrowserPortable"
+        $sourcePath = "C:\B\ZenBrowserPortable"
         
-        Write-Host "Found Builder: $builderPath"
+        Write-Host "Builder: $builderPath"
+        Write-Host "Source:  $sourcePath"
         
-        # 3. 运行打包 (5分钟超时)
+        # 启动进程
+        # Timeout 改为 1200秒 (20分钟)，给 GitHub 弱鸡服务器充足的时间
         $p = Start-Process -FilePath $builderPath -ArgumentList "`"$sourcePath`"" -PassThru
+        
         try {
-            $p | Wait-Process -Timeout 300
-            Write-Host "PAF Build finished."
+            $p | Wait-Process -Timeout 1200
+            Write-Host "PAF Build finished successfully."
         } catch {
             $p | Stop-Process -Force
-            Write-Warning "PAF Build TIMED OUT! Proceeding to ZIP..."
+            Write-Warning "PAF Build TIMED OUT (20min)! Killing process."
+            Write-Warning "Continuing to ZIP upload..."
         }
 
-    # 8. 重命名与压缩
+    # 9. 搬回文件并上传
     - name: Finalize Packages
       shell: powershell
       run: |
-        $ver = Get-Content "ZenBrowserPortable\App\AppInfo\version.txt"
+        $ver = Get-Content "C:\B\ZenBrowserPortable\App\AppInfo\version.txt"
         
-        $pafFile = Get-ChildItem -Path . -Filter "*.paf.exe" | Select-Object -First 1
+        # 找回生成的 .paf.exe
+        $pafFile = Get-ChildItem -Path "C:\B" -Filter "*.paf.exe" | Select-Object -First 1
         if ($pafFile) { 
-            Rename-Item $pafFile.FullName "ZenBrowserPortable_${ver}.paf.exe" 
-            Write-Host "SUCCESS: PAF Installer created."
+            # 搬回工作目录
+            Move-Item $pafFile.FullName ".\ZenBrowserPortable_${ver}.paf.exe"
+            Write-Host "SUCCESS: Installer recovered."
         }
         
-        Compress-Archive -Path "ZenBrowserPortable" -DestinationPath "ZenBrowserPortable_${ver}.zip"
+        # 打包 ZIP (从 C:\B 压缩)
+        Compress-Archive -Path "C:\B\ZenBrowserPortable" -DestinationPath "ZenBrowserPortable_${ver}.zip"
 
-    # 9. 上传
+    # 10. 上传
     - name: Upload Release
       uses: softprops/action-gh-release@v1
       with:
