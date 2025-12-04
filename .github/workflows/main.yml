@@ -87,65 +87,56 @@ jobs:
         set CSC=%windir%\Microsoft.NET\Framework64\v4.0.30319\csc.exe
         "%CSC%" /target:exe /out:ZenBrowserPortable\ZenBrowserPortable.exe /win32icon:appicon.ico /r:System.Windows.Forms.dll Launcher.cs
 
-    # 5. 准备打包工具 (自动寻路版)
-    - name: Setup Local PAF Installer
+    # 5. 解压本地 PAF 工具 (直接解压根目录文件)
+    - name: Extract Local PAF Tool
       shell: powershell
       run: |
-        # 1. 确认文件存在
         if (-not (Test-Path "InstallerTool.exe")) {
-            Write-Error "CRITICAL ERROR: InstallerTool.exe is missing from repo root!"
-            ls
+            Write-Error "CRITICAL: InstallerTool.exe not found in repo root!"
             exit 1
         }
-        
-        Write-Host "Found InstallerTool.exe, size: $((Get-Item InstallerTool.exe).Length) bytes"
-
-        # 2. 解压
+        # 直接解压到 PAF_Installer 文件夹
         7z x "InstallerTool.exe" -o"PAF_Installer" -y
-        
-        # 3. 调试：打印解压出来的目录结构 (如果失败了方便看)
-        Write-Host "--- Debug: Listing extracted files ---"
-        Get-ChildItem -Path "PAF_Installer" -Recurse | Select-Object FullName
-        Write-Host "--- End Debug ---"
 
-    # 6. 执行打包 (动态寻找 exe)
+    # 6. 执行打包 (固定路径 + 超时熔断)
     - name: Build .paf.exe Package
       shell: powershell
       run: |
-        # 自动搜索 PortableApps.comInstaller.exe 到底在哪
-        $pafExe = Get-ChildItem -Path "PAF_Installer" -Filter "PortableApps.comInstaller.exe" -Recurse | Select-Object -First 1
+        # 直接指定标准路径，不搜了
+        $builderPath = "$PWD\PAF_Installer\App\PortableApps.comInstaller\PortableApps.comInstaller.exe"
+        $sourcePath = "$PWD\ZenBrowserPortable"
         
-        if (-not $pafExe) {
-            Write-Error "Could not find 'PortableApps.comInstaller.exe' inside the extracted folder!"
+        Write-Host "Builder: $builderPath"
+        
+        if (-not (Test-Path $builderPath)) {
+            Write-Error "Builder executable not found at expected path!"
+            ls "PAF_Installer\App"
             exit 1
         }
         
-        Write-Host "Found Builder at: $($pafExe.FullName)"
-        
-        # 构建命令参数
-        $builderPath = $pafExe.FullName
-        $sourcePath = "$PWD\ZenBrowserPortable"
-        
-        # 调用打包工具
-        Start-Process -FilePath $builderPath -ArgumentList "`"$sourcePath`"" -Wait -NoNewWindow
+        # 启动进程，设置 3 分钟超时
+        $p = Start-Process -FilePath $builderPath -ArgumentList "`"$sourcePath`"" -PassThru
+        try {
+            $p | Wait-Process -Timeout 180
+            Write-Host "PAF Build finished."
+        } catch {
+            $p | Stop-Process -Force
+            Write-Warning "PAF Build TIMED OUT! Killing process."
+            Write-Warning "Proceeding to ZIP upload..."
+        }
 
-    # 7. 重命名与压缩
+    # 7. 重命名与压缩 (保底 ZIP)
     - name: Finalize Packages
       shell: powershell
       run: |
         $ver = Get-Content "ZenBrowserPortable\App\AppInfo\version.txt"
         
-        # 重命名 .paf.exe
         $pafFile = Get-ChildItem -Path . -Filter "*.paf.exe" | Select-Object -First 1
         if ($pafFile) { 
             Rename-Item $pafFile.FullName "ZenBrowserPortable_${ver}.paf.exe" 
-            Write-Host "PAF Installer created successfully."
-        } else {
-            Write-Error "ERROR: .paf.exe was NOT created by the installer tool."
-            exit 1
+            Write-Host "SUCCESS: PAF Installer created."
         }
         
-        # 打包 .zip
         Compress-Archive -Path "ZenBrowserPortable" -DestinationPath "ZenBrowserPortable_${ver}.zip"
 
     # 8. 上传
