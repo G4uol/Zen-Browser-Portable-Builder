@@ -2,7 +2,7 @@
 
 # Zen Browser 便携版 (自动化构建器)
 
-[English](https://www.google.com/search?q=%23english) | [中文](https://www.google.com/search?q=%23chinese)
+[English](#english) | [中文](#chinese)
 
 -----
 
