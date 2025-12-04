@@ -23,13 +23,8 @@ jobs:
       run: |
         $url = "https://api.github.com/repos/zen-browser/desktop/releases?per_page=5"
         $headers = @{ "Authorization" = "token $env:GH_TOKEN" }
-        try {
-            $releases = Invoke-RestMethod -Uri $url -Method Get -Headers $headers
-        } catch {
-            Write-Error "API Error: $($_.Exception.Message)"
-            exit 1
-        }
-
+        $releases = Invoke-RestMethod -Uri $url -Method Get -Headers $headers
+        
         $downloadUrl = ""
         $version = ""
         foreach ($release in $releases) {
@@ -80,15 +75,9 @@ jobs:
 
         $safeVer = $ver -replace "[^0-9.]", ""
         while (($safeVer.ToCharArray() | Where-Object { $_ -eq '.' }).Count -lt 3) { $safeVer += ".0" }
-        
-        $iniPath = "ZenBrowserPortable\App\AppInfo\appinfo.ini"
-        $content = Get-Content "appinfo.ini"
-        $content = $content -replace "PackageVersion=1.0.0.0", "PackageVersion=$safeVer"
-        $content = $content -replace "DisplayVersion=Latest", "DisplayVersion=$ver"
-        if ($content -notcontains "CommercialUse=true") {
-            $content = $content -replace "\[License\]", "[License]`r`nCommercialUse=true"
-        }
-        Set-Content -Path $iniPath -Value $content
+        (Get-Content "appinfo.ini") -replace "PackageVersion=1.0.0.0", "PackageVersion=$safeVer" `
+                                    -replace "DisplayVersion=Latest", "DisplayVersion=$ver" `
+                                    | Set-Content "ZenBrowserPortable\App\AppInfo\appinfo.ini"
 
     # 4. 创建 help.html
     - name: Create Help File
@@ -120,39 +109,27 @@ jobs:
         }
         Copy-Item $icoPath "$destDir\appicon.ico" -Force
 
-    # === 7. 核心修正：解压你上传的 InstallerTool.zip ===
-    - name: Extract Local PAF Tool (From ZIP)
-      shell: powershell
-      run: |
-        Write-Host "Checking for InstallerTool.zip..."
-        
-        # 1. 检查压缩包是否存在
-        if (-not (Test-Path "InstallerTool.zip")) {
-            Write-Error "FATAL: 'InstallerTool.zip' not found in repo root!"
-            exit 1
-        }
-
-        # 2. 解压到当前目录 (会生成 InstallerTool 文件夹)
-        7z x "InstallerTool.zip" -y
-        
-        Write-Host "Extracted successfully."
-
-    # 8. 执行打包 (自动搜寻 exe)
+    # === 7. 解压 ZIP 并打包 ===
     - name: Build .paf.exe Package
       shell: powershell
       run: |
-        # 自动寻找 exe (无论是在根目录还是 InstallerTool 文件夹里)
+        # 1. 解压InstallerTool.zip
+        if (-not (Test-Path "InstallerTool.zip")) { Write-Error "ZIP missing!"; exit 1 }
+        7z x "InstallerTool.zip" -y
+        
+        # 2. 核心修正：自动搜寻 PortableApps.comInstaller.exe 到底在哪
+        # 不再硬编码路径，而是全盘搜索解压出来的文件夹
         $pafExe = Get-ChildItem -Path . -Filter "PortableApps.comInstaller.exe" -Recurse | Select-Object -First 1
         
-        if (-not $pafExe) {
-            Write-Error "FATAL: 'PortableApps.comInstaller.exe' not found after unzipping!"
+        if (-not $pafExe) { 
+            Write-Error "FATAL: Installer EXE not found after unzip!"
             exit 1 
         }
         
         $builderPath = $pafExe.FullName
         $sourcePath = "$PWD\ZenBrowserPortable"
         
-        Write-Host "Found Builder at: $builderPath"
+        Write-Host "Found Builder: $builderPath"
         
         # 3. 运行打包 (5分钟超时)
         $p = Start-Process -FilePath $builderPath -ArgumentList "`"$sourcePath`"" -PassThru
@@ -164,7 +141,7 @@ jobs:
             Write-Warning "PAF Build TIMED OUT! Proceeding to ZIP..."
         }
 
-    # 9. 重命名与压缩
+    # 8. 重命名与压缩
     - name: Finalize Packages
       shell: powershell
       run: |
@@ -174,13 +151,11 @@ jobs:
         if ($pafFile) { 
             Rename-Item $pafFile.FullName "ZenBrowserPortable_${ver}.paf.exe" 
             Write-Host "SUCCESS: PAF Installer created."
-        } else {
-            Write-Warning "WARNING: .paf.exe was not created."
         }
         
         Compress-Archive -Path "ZenBrowserPortable" -DestinationPath "ZenBrowserPortable_${ver}.zip"
 
-    # 10. 上传
+    # 9. 上传
     - name: Upload Release
       uses: softprops/action-gh-release@v1
       with:
