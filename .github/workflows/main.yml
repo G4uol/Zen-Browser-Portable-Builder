@@ -15,20 +15,30 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
 
-    # 1. 下载 Zen Browser
+    # 1. 精确寻找 zen.installer.exe (修复找不到文件的问题)
     - name: Find and Download Installer
       shell: powershell
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
+        # 使用 Token 防止 API 限流
         $url = "https://api.github.com/repos/zen-browser/desktop/releases?per_page=5"
         $headers = @{ "Authorization" = "token $env:GH_TOKEN" }
-        $releases = Invoke-RestMethod -Uri $url -Method Get -Headers $headers
         
+        try {
+            $releases = Invoke-RestMethod -Uri $url -Method Get -Headers $headers
+        } catch {
+            Write-Error "API Request Failed: $($_.Exception.Message)"
+            exit 1
+        }
+
         $downloadUrl = ""
         $version = ""
+
+        # 遍历查找 zen.installer.exe
         foreach ($release in $releases) {
             foreach ($asset in $release.assets) {
+                # 只要名字完全匹配，就是它！
                 if ($asset.name -eq "zen.installer.exe") {
                     $downloadUrl = $asset.browser_download_url
                     $version = $release.tag_name
@@ -38,9 +48,9 @@ jobs:
             if ($downloadUrl) { break }
         }
 
-        if (-not $downloadUrl) { Write-Error "Target Not Found"; exit 1 }
+        if (-not $downloadUrl) { Write-Error "Target 'zen.installer.exe' Not Found!"; exit 1 }
         
-        Write-Host "Target: $version"
+        Write-Host "Found Version: $version"
         Invoke-WebRequest -Uri $downloadUrl -OutFile "zen_installer.exe"
         echo "VERSION=$version" >> $env:GITHUB_OUTPUT
 
@@ -57,6 +67,7 @@ jobs:
         if (Test-Path "TempExtract\core") {
             Move-Item "TempExtract\core\*" "ZenBrowserPortable\App\ZenBrowser"
         } else {
+            # 兜底：如果没有core文件夹，尝试找zen.exe
             $zenExe = Get-ChildItem -Path "TempExtract" -Filter "zen.exe" -Recurse | Select-Object -First 1
             if ($zenExe) { Move-Item "$($zenExe.DirectoryName)\*" "ZenBrowserPortable\App\ZenBrowser" }
         }
@@ -65,16 +76,20 @@ jobs:
     - name: Configure App
       shell: powershell
       run: |
+        # 禁用更新
         $distDir = "ZenBrowserPortable\App\ZenBrowser\distribution"
         New-Item -ItemType Directory -Force -Path $distDir
         Set-Content -Path "$distDir\policies.json" -Value '{ "policies": { "DisableAppUpdate": true, "ManualAppUpdateOnly": true } }'
 
+        # 写入版本号
         $ver = "${{ steps.find_download.outputs.VERSION }}"
         if (-not $ver) { $ver = "${{ env.VERSION }}" }
         Set-Content -Path "ZenBrowserPortable\App\AppInfo\version.txt" -Value $ver
 
+        # 修正 appinfo.ini 版本格式 (1.17.12b -> 1.17.12.0)
         $safeVer = $ver -replace "[^0-9.]", ""
         while (($safeVer.ToCharArray() | Where-Object { $_ -eq '.' }).Count -lt 3) { $safeVer += ".0" }
+        
         (Get-Content "appinfo.ini") -replace "PackageVersion=1.0.0.0", "PackageVersion=$safeVer" `
                                     -replace "DisplayVersion=Latest", "DisplayVersion=$ver" `
                                     | Set-Content "ZenBrowserPortable\App\AppInfo\appinfo.ini"
@@ -87,42 +102,47 @@ jobs:
         set CSC=%windir%\Microsoft.NET\Framework64\v4.0.30319\csc.exe
         "%CSC%" /target:exe /out:ZenBrowserPortable\ZenBrowserPortable.exe /win32icon:appicon.ico /r:System.Windows.Forms.dll Launcher.cs
 
-    # 5. 解压本地 PAF 工具 (直接解压根目录文件)
-    - name: Extract Local PAF Tool
+    # 5. 准备打包工具 (增加文件大小检查)
+    - name: Setup Local PAF Installer
       shell: powershell
       run: |
         if (-not (Test-Path "InstallerTool.exe")) {
-            Write-Error "CRITICAL: InstallerTool.exe not found in repo root!"
+            Write-Error "CRITICAL: InstallerTool.exe is missing from repo root!"
             exit 1
         }
-        # 直接解压到 PAF_Installer 文件夹
+        
+        # 检查文件大小，防止使用了坏文件
+        $size = (Get-Item "InstallerTool.exe").Length
+        if ($size -lt 2000000) {
+            Write-Error "ERROR: Your 'InstallerTool.exe' is too small ($size bytes). It is likely corrupt or an HTML page. Please upload the real 5MB file."
+            exit 1
+        }
+        
+        Write-Host "InstallerTool.exe is valid ($size bytes). Extracting..."
         7z x "InstallerTool.exe" -o"PAF_Installer" -y
 
-    # 6. 执行打包 (固定路径 + 超时熔断)
+    # 6. 执行打包 (自动寻找构建器路径)
     - name: Build .paf.exe Package
       shell: powershell
       run: |
-        # 直接指定标准路径，不搜了
-        $builderPath = "$PWD\PAF_Installer\App\PortableApps.comInstaller\PortableApps.comInstaller.exe"
+        # 自动寻找 exe，防止路径变动
+        $pafExe = Get-ChildItem -Path "PAF_Installer" -Filter "PortableApps.comInstaller.exe" -Recurse | Select-Object -First 1
+        
+        if (-not $pafExe) { Write-Error "Builder exe not found in extracted files!"; exit 1 }
+        
+        $builderPath = $pafExe.FullName
         $sourcePath = "$PWD\ZenBrowserPortable"
         
-        Write-Host "Builder: $builderPath"
+        Write-Host "Using Builder: $builderPath"
         
-        if (-not (Test-Path $builderPath)) {
-            Write-Error "Builder executable not found at expected path!"
-            ls "PAF_Installer\App"
-            exit 1
-        }
-        
-        # 启动进程，设置 3 分钟超时
+        # 启动进程，3分钟超时熔断
         $p = Start-Process -FilePath $builderPath -ArgumentList "`"$sourcePath`"" -PassThru
         try {
             $p | Wait-Process -Timeout 180
             Write-Host "PAF Build finished."
         } catch {
             $p | Stop-Process -Force
-            Write-Warning "PAF Build TIMED OUT! Killing process."
-            Write-Warning "Proceeding to ZIP upload..."
+            Write-Warning "PAF Build TIMED OUT! Killing process to prevent hang."
         }
 
     # 7. 重命名与压缩 (保底 ZIP)
@@ -131,15 +151,17 @@ jobs:
       run: |
         $ver = Get-Content "ZenBrowserPortable\App\AppInfo\version.txt"
         
+        # 重命名生成的 paf
         $pafFile = Get-ChildItem -Path . -Filter "*.paf.exe" | Select-Object -First 1
         if ($pafFile) { 
             Rename-Item $pafFile.FullName "ZenBrowserPortable_${ver}.paf.exe" 
             Write-Host "SUCCESS: PAF Installer created."
         }
         
+        # 总是打包 ZIP
         Compress-Archive -Path "ZenBrowserPortable" -DestinationPath "ZenBrowserPortable_${ver}.zip"
 
-    # 8. 上传
+    # 8. 上传 (覆盖模式)
     - name: Upload Release
       uses: softprops/action-gh-release@v1
       with:
