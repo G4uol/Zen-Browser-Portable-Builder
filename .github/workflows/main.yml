@@ -141,6 +141,6 @@ jobs:
       with:
         tag_name: ${{ env.VERSION }}
         name: Zen Browser Portable ${{ env.VERSION }}
-        files: "*.zip"
+        files: "ZenBrowserPortable_*.zip"
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
