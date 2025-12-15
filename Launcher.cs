@@ -7,76 +7,111 @@ using System.Windows.Forms;
 
 namespace ZenLauncher {
     class Program {
-        // =============================================================
-        // 你的仓库地址
-        // =============================================================
         const string GITHUB_REPO = "CyLoiMe/Zen-Browser-Portable-Builder"; 
+        const string LOG_FILE = "launcher_log.txt";
+        // 设定日志最大为 1MB
+        const long MAX_LOG_SIZE = 1024 * 1024; 
 
         static void Main(string[] args) {
-            try {
-                string baseDir = AppDomain.CurrentDomain.BaseDirectory;
-                string appDir = Path.Combine(baseDir, @"App\ZenBrowser");
-                string exePath = Path.Combine(appDir, "zen.exe");
-                string profileDir = Path.Combine(baseDir, @"Data\profile");
-                
-                // 定义版本文件路径
-                string versionFile = Path.Combine(baseDir, @"App\AppInfo\version.txt");
-                string iniFile = Path.Combine(baseDir, @"App\AppInfo\appinfo.ini");
+            string baseDir = AppDomain.CurrentDomain.BaseDirectory;
+            string appDir = Path.Combine(baseDir, @"App\ZenBrowser");
+            string exePath = Path.Combine(appDir, "zen.exe");
+            string profileDir = Path.Combine(baseDir, @"Data\profile");
+            
+            string versionFile = Path.Combine(baseDir, @"App\AppInfo\version.txt");
+            string iniFile = Path.Combine(baseDir, @"App\AppInfo\appinfo.ini");
 
-                // 启动检查
+            // 启动时进行日志“大扫除”
+            CleanLogFile();
+
+            try {
                 if (!File.Exists(exePath)) {
-                    MessageBox.Show("Error: zen.exe not found!", "Zen Browser Portable");
+                    string msg = "Error: zen.exe not found in: " + appDir;
+                    LogError(msg);
+                    MessageBox.Show(msg, "Zen Browser Portable", MessageBoxButtons.OK, MessageBoxIcon.Error);
                     return;
                 }
 
                 if (!Directory.Exists(profileDir)) Directory.CreateDirectory(profileDir);
 
-                // 启动浏览器
                 ProcessStartInfo psi = new ProcessStartInfo();
                 psi.FileName = exePath;
                 psi.Arguments = "-profile \"" + profileDir + "\" -no-remote " + string.Join(" ", args);
                 psi.UseShellExecute = false;
+                
                 Process.Start(psi);
 
-                // === 调试模式：前台运行检查 ===
                 if (!string.IsNullOrEmpty(GITHUB_REPO)) {
-                    CheckUpdateDebug(versionFile, iniFile);
+                    Thread updateThread = new Thread(() => CheckUpdateSilent(versionFile, iniFile));
+                    updateThread.IsBackground = true;
+                    updateThread.Start();
                 }
 
             } catch (Exception ex) {
-                MessageBox.Show("Launch Error: " + ex.Message);
+                LogError("Critical Launch Error: " + ex.ToString());
+                MessageBox.Show("Launch Error: " + ex.Message, "Zen Browser Portable");
             }
+        }
+
+        // 清理日志逻辑
+        static void CleanLogFile() {
+            try {
+                string logPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, LOG_FILE);
+                if (File.Exists(logPath)) {
+                    FileInfo fi = new FileInfo(logPath);
+                    // 如果文件超过 1MB，直接删除旧的，保持清爽。
+                    if (fi.Length > MAX_LOG_SIZE) {
+                        File.Delete(logPath);
+                        // 创建一个新文件并记录清理操作
+                        LogError("Log file was too large and has been reset.");
+                    }
+                }
+            } catch { /* 清理失败就算了，不影响使用 */ }
+        }
+
+        static void LogError(string message) {
+            try {
+                string logPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, LOG_FILE);
+                string timeStamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+                // 保留最近的记录
+                string content = string.Format("[{0}] {1}\r\n", timeStamp, message);
+                File.AppendAllText(logPath, content);
+            } catch { }
         }
 
         static string GetLocalVersion(string txtPath, string iniPath) {
-            if (File.Exists(txtPath)) return File.ReadAllText(txtPath).Trim();
-            if (File.Exists(iniPath)) {
-                string[] lines = File.ReadAllLines(iniPath);
-                foreach (string line in lines) {
-                    if (line.StartsWith("DisplayVersion=", StringComparison.OrdinalIgnoreCase)) {
-                        return line.Split('=')[1].Trim();
+            try {
+                if (File.Exists(txtPath)) return File.ReadAllText(txtPath).Trim();
+                if (File.Exists(iniPath)) {
+                    string[] lines = File.ReadAllLines(iniPath);
+                    foreach (string line in lines) {
+                        if (line.StartsWith("DisplayVersion=", StringComparison.OrdinalIgnoreCase)) {
+                            string[] parts = line.Split('=');
+                            if (parts.Length > 1) return parts[1].Trim();
+                        }
                     }
                 }
+            } catch (Exception ex) {
+                LogError("Failed to read local version: " + ex.Message);
             }
-            return "UNKNOWN";
+            return null;
         }
 
-        static void CheckUpdateDebug(string txtPath, string iniPath) {
+        static void CheckUpdateSilent(string txtPath, string iniPath) {
             try {
-                // 1. 获取本地版本
                 string localVer = GetLocalVersion(txtPath, iniPath);
-                
-                // 2. 设置网络 TLS 1.2
+                if (string.IsNullOrEmpty(localVer)) {
+                    LogError("Skipping update check: Local version not found.");
+                    return;
+                }
+
                 ServicePointManager.SecurityProtocol = (SecurityProtocolType)3072;
                 WebClient client = new WebClient();
-                client.Headers.Add("User-Agent", "ZenPortableCheck/Debug");
+                client.Headers.Add("User-Agent", "ZenPortableCheck");
                 
-                // 3. 请求 GitHub API
                 string url = "https://api.github.com/repos/" + GITHUB_REPO + "/releases/latest";
-                
                 string json = client.DownloadString(url);
 
-                // 4. 解析 JSON
                 string search = "\"tag_name\":";
                 int idx = json.IndexOf(search);
                 if (idx != -1) {
@@ -84,30 +119,30 @@ namespace ZenLauncher {
                     int end = json.IndexOf("\"", start);
                     string remoteVer = json.Substring(start, end - start);
 
-                    // 【修复点】：使用 string.Format 替代 $ 符号，兼容旧编译器
-                    string msg = string.Format(
-                        "=== Debug Report ===\n\nLocal Version:  [{0}]\nRemote Version: [{1}]\n\nAre they different? {2}",
-                        localVer, 
-                        remoteVer, 
-                        (localVer != remoteVer ? "YES" : "NO")
-                    );
-                    
-                    MessageBox.Show(msg, "Update Check Result");
+                    if (!remoteVer.Trim().Equals(localVer.Trim(), StringComparison.OrdinalIgnoreCase)) {
+                        string msg = string.Format("New version available! Local: {0}, Latest: {1}", localVer, remoteVer);
+                        LogError(msg); 
 
-                    // 5. 如果不同，打开网页
-                    if (localVer != remoteVer) {
-                         DialogResult dr = MessageBox.Show("New version found! Open download page?", "Update", MessageBoxButtons.YesNo);
-                         if (dr == DialogResult.Yes) {
-                             Process.Start("https://github.com/" + GITHUB_REPO + "/releases");
-                         }
-                    }
+                        string uiMsg = string.Format("New version available!\n\nLocal: {0}\nLatest: {1}\n\nDo you want to go to the download page?", localVer, remoteVer);
+                        DialogResult dr = MessageBox.Show(uiMsg, "Zen Browser Portable Update", MessageBoxButtons.YesNo, MessageBoxIcon.Information);
+
+                        if (dr == DialogResult.Yes) {
+                            Process.Start("https://github.com/" + GITHUB_REPO + "/releases");
+                        }
+                    } 
                 } else {
-                    MessageBox.Show("Error: Could not find 'tag_name' in JSON response.", "Json Parse Error");
+                    LogError("JSON Parse Error: tag_name not found.");
                 }
             } catch (WebException webEx) {
-                MessageBox.Show("Network Error:\n" + webEx.Message, "Connection Failed");
+                string responseText = "";
+                if (webEx.Response != null) {
+                    using (StreamReader reader = new StreamReader(webEx.Response.GetResponseStream())) {
+                        responseText = reader.ReadToEnd();
+                    }
+                }
+                LogError(string.Format("Network Error: {0}. Details: {1}", webEx.Message, responseText));
             } catch (Exception ex) {
-                MessageBox.Show("General Error:\n" + ex.Message, "Crash");
+                LogError("General Update Error: " + ex.ToString());
             }
         }
     }
