@@ -8,67 +8,79 @@ using System.Windows.Forms;
 namespace ZenLauncher {
     class Program {
         // =============================================================
-        // 【请修改这里】你的 GitHub 仓库地址 (格式: 用户名/仓库名)
+        // 你的仓库地址
         // =============================================================
         const string GITHUB_REPO = "CyLoiMe/Zen-Browser-Portable-Builder"; 
 
         static void Main(string[] args) {
             try {
-                // 1. 定义路径
                 string baseDir = AppDomain.CurrentDomain.BaseDirectory;
                 string appDir = Path.Combine(baseDir, @"App\ZenBrowser");
                 string exePath = Path.Combine(appDir, "zen.exe");
                 string profileDir = Path.Combine(baseDir, @"Data\profile");
+                
+                // 定义版本文件路径
                 string versionFile = Path.Combine(baseDir, @"App\AppInfo\version.txt");
+                string iniFile = Path.Combine(baseDir, @"App\AppInfo\appinfo.ini");
 
-                // 2. 启动前检查
+                // 启动检查
                 if (!File.Exists(exePath)) {
-                    MessageBox.Show("Error: zen.exe not found in:\n" + appDir + "\n\nPlease ensure you installed the Portable version correctly.", "Zen Browser Portable", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    MessageBox.Show("Error: zen.exe not found!", "Zen Browser Portable");
                     return;
                 }
 
-                // 3. 确保数据目录存在
                 if (!Directory.Exists(profileDir)) Directory.CreateDirectory(profileDir);
 
-                // 4. 启动浏览器 (便携模式)
+                // 启动浏览器
                 ProcessStartInfo psi = new ProcessStartInfo();
                 psi.FileName = exePath;
-                // -profile: 指定数据存储在 Data\profile
-                // -no-remote: 允许与本地安装的 Firefox/Zen 共存
                 psi.Arguments = "-profile \"" + profileDir + "\" -no-remote " + string.Join(" ", args);
                 psi.UseShellExecute = false;
-                
-                // 启动进程
                 Process.Start(psi);
 
-                // 5. 启动后：后台静默检查更新 (不卡界面)
-                if (File.Exists(versionFile) && !string.IsNullOrEmpty(GITHUB_REPO) && !GITHUB_REPO.Contains("YOUR_USERNAME")) {
-                    Thread updateThread = new Thread(() => CheckUpdate(versionFile));
-                    updateThread.IsBackground = true;
-                    updateThread.Start();
+                // === 调试模式：不在后台运行，直接在前台运行，卡住界面也要看结果 ===
+                if (!string.IsNullOrEmpty(GITHUB_REPO)) {
+                    // 直接运行检查，不使用 Thread，确保你能看到弹窗
+                    CheckUpdateDebug(versionFile, iniFile);
                 }
 
             } catch (Exception ex) {
-                MessageBox.Show("Launch Error: " + ex.Message, "Zen Browser Portable");
+                MessageBox.Show("Launch Error: " + ex.Message);
             }
         }
 
-        // 后台检查更新逻辑
-        static void CheckUpdate(string localVerPath) {
+        static string GetLocalVersion(string txtPath, string iniPath) {
+            if (File.Exists(txtPath)) return File.ReadAllText(txtPath).Trim();
+            if (File.Exists(iniPath)) {
+                string[] lines = File.ReadAllLines(iniPath);
+                foreach (string line in lines) {
+                    if (line.StartsWith("DisplayVersion=", StringComparison.OrdinalIgnoreCase)) {
+                        return line.Split('=')[1].Trim();
+                    }
+                }
+            }
+            return "UNKNOWN";
+        }
+
+        static void CheckUpdateDebug(string txtPath, string iniPath) {
             try {
-                // 读取本地版本
-                string localVer = File.ReadAllText(localVerPath).Trim();
+                // 1. 获取本地版本
+                string localVer = GetLocalVersion(txtPath, iniPath);
                 
-                // 设置网络安全协议 (GitHub 需要 TLS 1.2)
+                // 2. 设置网络 TLS 1.2
                 ServicePointManager.SecurityProtocol = (SecurityProtocolType)3072;
                 WebClient client = new WebClient();
-                client.Headers.Add("User-Agent", "ZenPortableCheck");
+                client.Headers.Add("User-Agent", "ZenPortableCheck/Debug");
                 
-                // 获取最新 Release 信息
+                // 3. 请求 GitHub API
                 string url = "https://api.github.com/repos/" + GITHUB_REPO + "/releases/latest";
+                
+                // 【调试信息 1】告诉用户正在连接
+                // MessageBox.Show("Checking URL: " + url + "\nLocal Version: " + localVer, "Debug Step 1");
+
                 string json = client.DownloadString(url);
 
-                // 解析 JSON 中的 "tag_name"
+                // 4. 解析 JSON
                 string search = "\"tag_name\":";
                 int idx = json.IndexOf(search);
                 if (idx != -1) {
@@ -76,22 +88,30 @@ namespace ZenLauncher {
                     int end = json.IndexOf("\"", start);
                     string remoteVer = json.Substring(start, end - start);
 
-                    // 如果版本不同，弹窗提示
-                    if (remoteVer != localVer) {
-                        DialogResult dr = MessageBox.Show(
-                            "New version available!\n\nLocal: " + localVer + "\nLatest: " + remoteVer + "\n\nDo you want to go to the download page?",
-                            "Zen Browser Portable Update",
-                            MessageBoxButtons.YesNo,
-                            MessageBoxIcon.Information
-                        );
+                    // 【调试信息 2】显示对比结果 (这是最重要的！)
+                    string msg = $"=== Debug Report ===\n\n" +
+                                 $"Local Version:  [{localVer}]\n" +
+                                 $"Remote Version: [{remoteVer}]\n\n" +
+                                 $"Are they different? {(localVer != remoteVer ? "YES" : "NO")}";
+                    
+                    MessageBox.Show(msg, "Update Check Result");
 
-                        if (dr == DialogResult.Yes) {
-                            Process.Start("https://github.com/" + GITHUB_REPO + "/releases");
-                        }
+                    // 5. 如果不同，打开网页
+                    if (localVer != remoteVer) {
+                         DialogResult dr = MessageBox.Show("New version found! Open download page?", "Update", MessageBoxButtons.YesNo);
+                         if (dr == DialogResult.Yes) {
+                             Process.Start("https://github.com/" + GITHUB_REPO + "/releases");
+                         }
                     }
+                } else {
+                    MessageBox.Show("Error: Could not find 'tag_name' in JSON response.", "Json Parse Error");
                 }
-            } catch {
-                // 静默失败
+            } catch (WebException webEx) {
+                // 捕获网络错误
+                MessageBox.Show("Network Error:\n" + webEx.Message, "Connection Failed");
+            } catch (Exception ex) {
+                // 捕获其他错误
+                MessageBox.Show("General Error:\n" + ex.Message, "Crash");
             }
         }
     }
