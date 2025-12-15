@@ -38,9 +38,8 @@ namespace ZenLauncher {
                 psi.UseShellExecute = false;
                 Process.Start(psi);
 
-                // === 调试模式：不在后台运行，直接在前台运行，卡住界面也要看结果 ===
+                // === 调试模式：前台运行检查 ===
                 if (!string.IsNullOrEmpty(GITHUB_REPO)) {
-                    // 直接运行检查，不使用 Thread，确保你能看到弹窗
                     CheckUpdateDebug(versionFile, iniFile);
                 }
 
@@ -75,9 +74,6 @@ namespace ZenLauncher {
                 // 3. 请求 GitHub API
                 string url = "https://api.github.com/repos/" + GITHUB_REPO + "/releases/latest";
                 
-                // 【调试信息 1】告诉用户正在连接
-                // MessageBox.Show("Checking URL: " + url + "\nLocal Version: " + localVer, "Debug Step 1");
-
                 string json = client.DownloadString(url);
 
                 // 4. 解析 JSON
@@ -88,11 +84,13 @@ namespace ZenLauncher {
                     int end = json.IndexOf("\"", start);
                     string remoteVer = json.Substring(start, end - start);
 
-                    // 【调试信息 2】显示对比结果 (这是最重要的！)
-                    string msg = $"=== Debug Report ===\n\n" +
-                                 $"Local Version:  [{localVer}]\n" +
-                                 $"Remote Version: [{remoteVer}]\n\n" +
-                                 $"Are they different? {(localVer != remoteVer ? "YES" : "NO")}";
+                    // 【修复点】：使用 string.Format 替代 $ 符号，兼容旧编译器
+                    string msg = string.Format(
+                        "=== Debug Report ===\n\nLocal Version:  [{0}]\nRemote Version: [{1}]\n\nAre they different? {2}",
+                        localVer, 
+                        remoteVer, 
+                        (localVer != remoteVer ? "YES" : "NO")
+                    );
                     
                     MessageBox.Show(msg, "Update Check Result");
 
@@ -107,10 +105,8 @@ namespace ZenLauncher {
                     MessageBox.Show("Error: Could not find 'tag_name' in JSON response.", "Json Parse Error");
                 }
             } catch (WebException webEx) {
-                // 捕获网络错误
                 MessageBox.Show("Network Error:\n" + webEx.Message, "Connection Failed");
             } catch (Exception ex) {
-                // 捕获其他错误
                 MessageBox.Show("General Error:\n" + ex.Message, "Crash");
             }
         }
