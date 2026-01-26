@@ -9,7 +9,7 @@ namespace ZenLauncher {
         // =============================================================
         // 你的仓库地址
         // =============================================================
-        const string GITHUB_REPO = "CyLoiMe/Zen-Browser-Portable-Builder"; 
+        const string GITHUB_REPO = "G4UOL/Zen-Browser-Portable-Builder"; 
         
         const string LOG_FILE = "launcher_log.txt";
         const long MAX_LOG_SIZE = 1024 * 1024; 
