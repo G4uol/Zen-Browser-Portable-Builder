@@ -48,12 +48,12 @@ if ($safeVer.StartsWith('.')) { $safeVer = "0" + $safeVer }  # Avoid leading dot
 
 
 foreach ($asset in $release.assets) {
-    
-        if ($asset.name -eq "zen.win-x86_64.zip") {
+    if ($asset.name -eq "zen.win-x86_64.zip") {  # Correct for x64; change to "zen.win-arm64.zip" for ARM64 if desired
         $downloadUrl = $asset.browser_download_url
         break
     }
-    }
+}
+
 }
 if (-not $downloadUrl) { Write-Error "Target Not Found"; exit 1 }
    
