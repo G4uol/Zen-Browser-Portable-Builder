@@ -64,7 +64,7 @@ jobs:
         echo "PACKAGE_VERSION=$safeVer" >> $env:GITHUB_ENV
         echo "DISPLAY_VERSION=$displayName" >> $env:GITHUB_ENV
     
-        - name: Extract Zip
+            - name: Extract Zip
       shell: powershell
       run: |
         New-Item -ItemType Directory -Force -Path "ZenBrowserPortable\App\ZenBrowser"
