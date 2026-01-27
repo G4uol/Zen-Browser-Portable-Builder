@@ -46,13 +46,13 @@ $safeVer = $buildVer -replace '[a-z]', ''
 while (($safeVer.ToCharArray() | Where-Object { $_ -eq '.' }).Count -lt 3) { $safeVer += ".0" }
 if ($safeVer.StartsWith('.')) { $safeVer = "0" + $safeVer }  # Avoid leading dot
 
+
 foreach ($asset in $release.assets) {
-    if ($asset.name -eq "zen.win-x86_64.zip") {  # Or "zen.win-arm64.zip" for ARM
+    if ($asset.name -eq "zen.win-x86_64.zip") {  # Remove spaces; use "zen.win-arm64.zip" for ARM if needed
         $downloadUrl = $asset.browser_download_url
         break
     }
 }
-
 if (-not $downloadUrl) { Write-Error "Target Not Found"; exit 1 }
    
 Write-Host "Target tag: $tagVersion, Build: $buildVer, Safe package version: $safeVer"
