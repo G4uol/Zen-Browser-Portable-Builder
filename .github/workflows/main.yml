@@ -31,66 +31,71 @@ try {
 }
 
 $downloadUrl = ""
-$version = $release.tag_name  # This will be "twilight"
+$tagVersion = $release.tag_name  # "twilight"
+$displayName = $release.name     # e.g., "Twilight build - 1.19t (2026-01-26 at 23:09:04)"
+
+# Parse build version like "1.19t"
+if ($displayName -match '(\d+\.\d+[a-z]?)') {
+    $buildVer = $matches[1]
+} else {
+    $buildVer = "0.0"  # Fallback
+}
+
+# Make safe package version (numeric with 3 dots, e.g., "1.19.0.0")
+$safeVer = $buildVer -replace '[a-z]', ''
+while (($safeVer.ToCharArray() | Where-Object { $_ -eq '.' }).Count -lt 3) { $safeVer += ".0" }
+if ($safeVer.StartsWith('.')) { $safeVer = "0" + $safeVer }  # Avoid leading dot
+
 foreach ($asset in $release.assets) {
-    if ($asset.name -eq "zen.installer.exe") {  # Or "zen.installer-arm64.exe" if you want the ARM version
+    if ($asset.name -eq "zen.win-x86_64.zip") {  # Or "zen.win-arm64.zip" for ARM
         $downloadUrl = $asset.browser_download_url
         break
     }
 }
 
 if (-not $downloadUrl) { Write-Error "Target Not Found"; exit 1 }
-    
-Write-Host "Target: $version"
-Invoke-WebRequest -Uri $downloadUrl -OutFile "zen_installer.exe"
-echo "VERSION=$version" >> $env:GITHUB_ENV
+   
+Write-Host "Target tag: $tagVersion, Build: $buildVer, Safe package version: $safeVer"
+Invoke-WebRequest -Uri $downloadUrl -OutFile "zen.zip"
+echo "VERSION=$tagVersion" >> $env:GITHUB_ENV
+echo "PACKAGE_VERSION=$safeVer" >> $env:GITHUB_ENV
+echo "DISPLAY_VERSION=$displayName" >> $env:GITHUB_ENV  # Optional: Full name for display
       
     # 2. 解压 Zen Browser
     - name: Extract Installer
       shell: powershell
-      run: |
-        New-Item -ItemType Directory -Force -Path "ZenBrowserPortable\App\ZenBrowser"
-        New-Item -ItemType Directory -Force -Path "ZenBrowserPortable\App\AppInfo"
-        New-Item -ItemType Directory -Force -Path "ZenBrowserPortable\Data"
-        New-Item -ItemType Directory -Force -Path "ZenBrowserPortable\Other\Source"
-        
-        7z x "zen_installer.exe" -o"TempExtract" -y
-        
-        if (Test-Path "TempExtract\core") {
-            Move-Item "TempExtract\core\*" "ZenBrowserPortable\App\ZenBrowser"
-        } else {
-            $zenExe = Get-ChildItem -Path "TempExtract" -Filter "zen.exe" -Recurse | Select-Object -First 1
-            if ($zenExe) { Move-Item "$($zenExe.DirectoryName)\*" "ZenBrowserPortable\App\ZenBrowser" }
-        }
+      run: 
 
+      New-Item -ItemType Directory -Force -Path "ZenBrowserPortable\App\ZenBrowser"
+New-Item -ItemType Directory -Force -Path "ZenBrowserPortable\App\AppInfo"
+New-Item -ItemType Directory -Force -Path "ZenBrowserPortable\Data"
+New-Item -ItemType Directory -Force -Path "ZenBrowserPortable\Other\Source"
+
+Expand-Archive -Path "zen.zip" -DestinationPath "ZenBrowserPortable\App\ZenBrowser" -Force
     # 3. 配置策略与版本
     - name: Configure App
       shell: powershell
-      run: |
-        # 禁用更新
-        $distDir = "ZenBrowserPortable\App\ZenBrowser\distribution"
-        New-Item -ItemType Directory -Force -Path $distDir
-        Set-Content -Path "$distDir\policies.json" -Value '{ "policies": { "DisableAppUpdate": true, "ManualAppUpdateOnly": true } }'
+      run: 
+      # 禁用更新
+$distDir = "ZenBrowserPortable\App\ZenBrowser\distribution"
+New-Item -ItemType Directory -Force -Path $distDir
+Set-Content -Path "$distDir\policies.json" -Value '{ "policies": { "DisableAppUpdate": true, "ManualAppUpdateOnly": true } }'
+# 写入版本号
+$ver = $env:VERSION  # twilight for tag/release
+$packageVer = $env:PACKAGE_VERSION  # e.g., 1.19.0.0
+$displayVer = $env:DISPLAY_VERSION  # Full release name, or use $ver if preferred
+Set-Content -Path "ZenBrowserPortable\App\AppInfo\version.txt" -Value $displayVer
+# 处理 appinfo.ini
+$iniPath = "ZenBrowserPortable\App\AppInfo\appinfo.ini"
+$content = Get-Content "appinfo.ini"
+$content = $content -replace "PackageVersion=1.0.0.0", "PackageVersion=$packageVer"
+$content = $content -replace "DisplayVersion=Latest", "DisplayVersion=$displayVer"
+if ($content -notcontains "CommercialUse=true") {
+    $content = $content -replace "$$   License   $$", "[License]`r`nCommercialUse=true"
+}
 
-        # 写入版本号
-        $ver = $env:VERSION
-        Set-Content -Path "ZenBrowserPortable\App\AppInfo\version.txt" -Value $ver
-
-        # 处理 appinfo.ini
-        $safeVer = $ver -replace "[^0-9.]", ""
-        while (($safeVer.ToCharArray() | Where-Object { $_ -eq '.' }).Count -lt 3) { $safeVer += ".0" }
-        
-        $iniPath = "ZenBrowserPortable\App\AppInfo\appinfo.ini"
-        $content = Get-Content "appinfo.ini"
-        $content = $content -replace "PackageVersion=1.0.0.0", "PackageVersion=$safeVer"
-        $content = $content -replace "DisplayVersion=Latest", "DisplayVersion=$ver"
-        if ($content -notcontains "CommercialUse=true") {
-            $content = $content -replace "\[License\]", "[License]`r`nCommercialUse=true"
-        }
-        
-        # === 使用标准的 UTF8 编码保存 ===
-        Set-Content -Path $iniPath -Value $content -Encoding UTF8
-
+# === 使用标准的 UTF8 编码保存 ===
+Set-Content -Path $iniPath -Value $content -Encoding UTF8
     # 4. 创建 help.html
     - name: Create Help File
       shell: powershell
@@ -124,19 +129,19 @@ echo "VERSION=$version" >> $env:GITHUB_ENV
     # 7. 仅打包 ZIP
     - name: Package to ZIP
       shell: powershell
-      run: |
-        $ver = $env:VERSION
-        $zipName = "ZenBrowserPortable_${ver}.zip"
-        
-        Write-Host "Creating ZIP: $zipName"
-        Compress-Archive -Path "ZenBrowserPortable" -DestinationPath $zipName
+      run: 
+      $ver = $env:VERSION
+$displayVer = $env:DISPLAY_VERSION -replace '[^a-zA-Z0-9.-]', '_'  # Sanitize for filename
+$$   zipName = "ZenBrowserPortable_Twilight_   $${displayVer}.zip"
 
+Write-Host "Creating ZIP: $zipName"
+Compress-Archive -Path "ZenBrowserPortable" -DestinationPath $zipName
     # 8. 上传
     - name: Upload Release
       uses: softprops/action-gh-release@v1
       with:
         tag_name: ${{ env.VERSION }}
         name: Zen Browser Portable ${{ env.VERSION }}
-        files: "ZenBrowserPortable_*.zip"
+        files: "ZenBrowserPortable_Twilight_*.zip"
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
