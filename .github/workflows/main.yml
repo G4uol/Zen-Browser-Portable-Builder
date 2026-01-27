@@ -20,35 +20,31 @@ jobs:
       shell: powershell
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      run: |
-        $url = "https://api.github.com/repos/zen-browser/desktop/releases?per_page=5"
-        $headers = @{ "Authorization" = "token $env:GH_TOKEN" }
-        try {
-            $releases = Invoke-RestMethod -Uri $url -Method Get -Headers $headers
-        } catch {
-            Write-Error "API Error: $($_.Exception.Message)"
-            exit 1
-        }
+      run: 
+      $url = "https://api.github.com/repos/zen-browser/desktop/releases/tags/twilight"
+$headers = @{ "Authorization" = "token $env:GH_TOKEN" }
+try {
+    $release = Invoke-RestMethod -Uri $url -Method Get -Headers $headers
+} catch {
+    Write-Error "API Error: $($_.Exception.Message)"
+    exit 1
+}
 
-        $downloadUrl = ""
-        $version = ""
-        foreach ($release in $releases) {
-            foreach ($asset in $release.assets) {
-                if ($asset.name -eq "zen.installer.exe") {
-                    $downloadUrl = $asset.browser_download_url
-                    $version = $release.tag_name
-                    break
-                }
-            }
-            if ($downloadUrl) { break }
-        }
+$downloadUrl = ""
+$version = $release.tag_name  # This will be "twilight"
+foreach ($asset in $release.assets) {
+    if ($asset.name -eq "zen.installer.exe") {  # Or "zen.installer-arm64.exe" if you want the ARM version
+        $downloadUrl = $asset.browser_download_url
+        break
+    }
+}
 
-        if (-not $downloadUrl) { Write-Error "Target Not Found"; exit 1 }
-        
-        Write-Host "Target: $version"
-        Invoke-WebRequest -Uri $downloadUrl -OutFile "zen_installer.exe"
-        echo "VERSION=$version" >> $env:GITHUB_ENV
-
+if (-not $downloadUrl) { Write-Error "Target Not Found"; exit 1 }
+    
+Write-Host "Target: $version"
+Invoke-WebRequest -Uri $downloadUrl -OutFile "zen_installer.exe"
+echo "VERSION=$version" >> $env:GITHUB_ENV
+      
     # 2. 解压 Zen Browser
     - name: Extract Installer
       shell: powershell
