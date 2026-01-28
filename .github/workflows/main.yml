@@ -28,6 +28,7 @@ jobs:
               Write-Error "API Error: $($_.Exception.Message)"
               exit 1
           }
+          Write-Host "Release updated_at: $($release.updated_at)"
 
           $downloadUrl = ""
           $tagVersion = $release.tag_name
