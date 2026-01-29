@@ -17,17 +17,13 @@ This project uses **GitHub Actions** to automatically build the **Portable Editi
 
 ### 📥 How to Use
 
-#### Method 1: Standalone Use (Recommended)
+Standalone Use (Recommended)
 
 1.  Go to the **Releases** page of this repository.
 2.  Download the latest `ZenBrowserPortable_Twilight_Twilight_build_x.x.x.zip` archive.
 3.  Unzip it to any location (USB drive recommended).
 4.  Double-click **`ZenBrowserPortable_Twilight_Twilight_build`** to start.
 5.  You can overwrite everything, it does not overwrite your profile data, so all your pinned tabs & workspaces/extensions and intact.
-
-#### Method 2: Integrate into PortableApps.com Platform
-
-### 🔄 How to Update
 
 
 ### 📄 Disclaimer
