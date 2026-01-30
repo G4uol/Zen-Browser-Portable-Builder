@@ -30,17 +30,15 @@ jobs:
           }
 
           $downloadUrl = ""
-          $tagVersion = $release.tag_name  # "twilight"
-          $displayName = $release.name     # e.g., "Twilight build - 1.19t (2026-01-29 at 23:10:51)"
+          $tagVersion = $release.tag_name
+          $displayName = $release.name
 
-          # Parse build version like "1.19t"
           if ($displayName -match '(\d+\.\d+[a-z]?)') {
               $buildVer = $matches[1]
           } else {
               $buildVer = "0.0"
           }
 
-          # Make safe package version (e.g., "1.19.0.0")
           $safeVer = $buildVer -replace '[a-z]', ''
           while (($safeVer.ToCharArray() | Where-Object { $_ -eq '.' }).Count -lt 3) { $safeVer += ".0" }
           if ($safeVer.StartsWith('.')) { $safeVer = "0" + $safeVer }
@@ -163,7 +161,7 @@ jobs:
 
             Always latest via daily schedule.
           files: ZenBrowserPortable_Twilight_*.zip
-          overwrite: false  # Important: create new release instead of overwriting
+          overwrite_files: false  # Explicit: do not overwrite assets (new tag anyway)
           generate_release_notes: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
