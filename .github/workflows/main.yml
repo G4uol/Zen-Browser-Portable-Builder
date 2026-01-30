@@ -2,9 +2,9 @@ name: Build Zen Browser Portable
 
 on:
   schedule:
-    - cron: '0 6 * * *'   # Runs daily at 06:00 UTC (≈06:00 London GMT / 07:00 BST)
+    - cron: '0 6 * * *'  # 06:00 UTC daily (~06:00 London GMT / 07:00 BST)
   workflow_dispatch:
-  
+
 jobs:
   build:
     runs-on: windows-latest
@@ -28,20 +28,19 @@ jobs:
               Write-Error "API Error: $($_.Exception.Message)"
               exit 1
           }
-          Write-Host "Release updated_at: $($release.updated_at)"
 
           $downloadUrl = ""
-          $tagVersion = $release.tag_name
-          $displayName = $release.name
+          $tagVersion = $release.tag_name  # "twilight"
+          $displayName = $release.name     # e.g. "Twilight build - 1.19t (2026-01-29 at 23:10:51)"
 
           # Parse build version like "1.19t"
           if ($displayName -match '(\d+\.\d+[a-z]?)') {
               $buildVer = $matches[1]
           } else {
-              $buildVer = "0.0"
+              $buildVer = "0.0"  # Fallback
           }
 
-          # Make safe package version (e.g., 1.19.0.0)
+          # Make safe package version (e.g. "1.19.0.0")
           $safeVer = $buildVer -replace '[a-z]', ''
           while (($safeVer.ToCharArray() | Where-Object { $_ -eq '.' }).Count -lt 3) { $safeVer += ".0" }
           if ($safeVer.StartsWith('.')) { $safeVer = "0" + $safeVer }
@@ -58,7 +57,10 @@ jobs:
               exit 1
           }
 
-          Write-Host "Target tag: $tagVersion, Build: $buildVer, Safe package version: $safeVer"
+          Write-Host "Target tag: $tagVersion"
+          Write-Host "Upstream release name: $displayName"
+          Write-Host "Parsed build ver: $buildVer | Safe ver: $safeVer"
+
           Invoke-WebRequest -Uri $downloadUrl -OutFile "zen.zip"
 
           echo "VERSION=$tagVersion" >> $env:GITHUB_ENV
@@ -75,23 +77,21 @@ jobs:
 
           Expand-Archive -Path "zen.zip" -DestinationPath "temp_extract" -Force
 
-          # Find the folder that contains zen.exe (handles deep nesting)
+          # Find folder containing zen.exe (handles nesting)
           $zenRoot = Get-ChildItem -Path "temp_extract" -Recurse -File -Filter "zen.exe" -ErrorAction SilentlyContinue |
                      Select-Object -First 1 | ForEach-Object { $_.DirectoryName }
 
           if (-not $zenRoot) {
-              Write-Error "zen.exe not found anywhere in extracted ZIP!"
+              Write-Error "zen.exe not found in extracted ZIP!"
               exit 1
           }
 
-          Write-Host "Found zen.exe in: $zenRoot - moving contents to App\ZenBrowser"
+          Write-Host "Found zen.exe in: $zenRoot - flattening to App\ZenBrowser"
 
-          # Copy everything from that folder to flatten structure
           Copy-Item -Path "$zenRoot\*" -Destination "ZenBrowserPortable\App\ZenBrowser" -Recurse -Force
           Copy-Item -Path "$zenRoot\.*" -Destination "ZenBrowserPortable\App\ZenBrowser" -Force -ErrorAction SilentlyContinue
 
-          # Debug: show what ended up in the folder
-          Write-Host "Files now in App\ZenBrowser:"
+          Write-Host "Files in App\ZenBrowser after extraction:"
           Get-ChildItem -Path "ZenBrowserPortable\App\ZenBrowser" -Recurse | Select-Object FullName
 
           Remove-Item -Path "temp_extract" -Recurse -Force -ErrorAction SilentlyContinue
@@ -105,33 +105,33 @@ jobs:
 
           $packageVer = $env:PACKAGE_VERSION
           $displayVer = $env:DISPLAY_VERSION
-
           Set-Content -Path "ZenBrowserPortable\App\AppInfo\version.txt" -Value $displayVer
 
           $iniPath = "ZenBrowserPortable\App\AppInfo\appinfo.ini"
           $content = Get-Content "appinfo.ini" -Raw
-
           $content = $content -replace "PackageVersion=1.0.0.0", "PackageVersion=$packageVer"
           $content = $content -replace "DisplayVersion=Latest", "DisplayVersion=$displayVer"
-
           if ($content -notmatch '\[License\].*CommercialUse=true') {
               $content += "`r`n`r`n[License]`r`nCommercialUse=true"
           }
-
           Set-Content -Path $iniPath -Value $content -Encoding UTF8
 
       - name: Create Help File
         shell: powershell
         run: |
-          Set-Content -Path "ZenBrowserPortable\help.html" -Value "<html><body><h1>Zen Browser Portable (Twilight)</h1><p>Built from Zen Twilight release.</p></body></html>"
+          Set-Content -Path "ZenBrowserPortable\help.html" -Value "<html><body><h1>Zen Browser Portable (Twilight)</h1><p>Built from latest Zen Twilight release.</p></body></html>"
 
       - name: Compile Launcher
         shell: cmd
         run: |
+          if not exist "Launcher.cs" (echo ERROR: Launcher.cs missing! & exit /b 1)
+          if not exist "appicon.ico" (echo ERROR: appicon.ico missing! & exit /b 1)
           copy appicon.ico ZenBrowserPortable\App\AppInfo\ >nul
           set CSC=%windir%\Microsoft.NET\Framework64\v4.0.30319\csc.exe
+          if not exist "%CSC%" (echo ERROR: csc.exe not found & exit /b 1)
           "%CSC%" /target:exe /out:ZenBrowserPortable\ZenBrowserPortable.exe /win32icon:appicon.ico /r:System.Windows.Forms.dll Launcher.cs
-          if %ERRORLEVEL% NEQ 0 (echo Launcher compilation failed & exit /b 1)
+          if %ERRORLEVEL% NEQ 0 (echo ERROR: Launcher compilation failed & exit /b 1)
+          echo Launcher compiled successfully
 
       - name: Generate PAF Icons
         shell: powershell
@@ -156,22 +156,23 @@ jobs:
           Write-Host "Creating ZIP: $zipName"
           Compress-Archive -Path "ZenBrowserPortable" -DestinationPath $zipName -Force
 
-            - name: Upload Release
+      - name: Upload Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ env.VERSION }}               # keeps "twilight"
-                    name: Zen Browser Portable Twilight - ${{ env.DISPLAY_VERSION }}        # Fixed/custom title (shows instead of commit msg)
+          tag_name: ${{ env.VERSION }}  # keeps "twilight"
+          name: Zen Browser Portable Twilight - ${{ env.DISPLAY_VERSION }}  # clean title with version/date
           body: |
             Automated portable build of the latest Zen Twilight release.
-            
+
             - Upstream release: ${{ env.DISPLAY_VERSION }}
-            - Built on: $(date +"%Y-%m-%d %H:%M UTC")
+            - Built on: ${{ github.run_started_at }} (UTC)
             - Portable launcher by G4uol
-            - No built-in updates (disabled via policies)
-            
-            Download the ZIP and extract to run `ZenBrowserPortable.exe`.
+            - Updates disabled via policies.json
+            - Extract and run ZenBrowserPortable.exe
+
+            Always latest via daily schedule.
           files: ZenBrowserPortable_Twilight_*.zip
           overwrite: true
-          generate_release_notes: false              # Optional: disable auto-notes if you want clean body only
+          generate_release_notes: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
