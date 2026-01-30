@@ -2,7 +2,7 @@ name: Build Zen Browser Portable
 
 on:
   schedule:
-    - cron: '0 6 * * *'  # 06:00 UTC daily (~06:00 London GMT / 07:00 BST)
+    - cron: '0 6 * * *'   # 06:00 UTC daily (≈06:00 London GMT / 07:00 BST)
   workflow_dispatch:
 
 jobs:
@@ -31,16 +31,16 @@ jobs:
 
           $downloadUrl = ""
           $tagVersion = $release.tag_name  # "twilight"
-          $displayName = $release.name     # e.g. "Twilight build - 1.19t (2026-01-29 at 23:10:51)"
+          $displayName = $release.name     # e.g., "Twilight build - 1.19t (2026-01-29 at 23:10:51)"
 
           # Parse build version like "1.19t"
           if ($displayName -match '(\d+\.\d+[a-z]?)') {
               $buildVer = $matches[1]
           } else {
-              $buildVer = "0.0"  # Fallback
+              $buildVer = "0.0"
           }
 
-          # Make safe package version (e.g. "1.19.0.0")
+          # Make safe package version (e.g., "1.19.0.0")
           $safeVer = $buildVer -replace '[a-z]', ''
           while (($safeVer.ToCharArray() | Where-Object { $_ -eq '.' }).Count -lt 3) { $safeVer += ".0" }
           if ($safeVer.StartsWith('.')) { $safeVer = "0" + $safeVer }
@@ -57,10 +57,7 @@ jobs:
               exit 1
           }
 
-          Write-Host "Target tag: $tagVersion"
-          Write-Host "Upstream release name: $displayName"
-          Write-Host "Parsed build ver: $buildVer | Safe ver: $safeVer"
-
+          Write-Host "Target tag: $tagVersion, Build: $buildVer, Safe package version: $safeVer"
           Invoke-WebRequest -Uri $downloadUrl -OutFile "zen.zip"
 
           echo "VERSION=$tagVersion" >> $env:GITHUB_ENV
@@ -77,21 +74,19 @@ jobs:
 
           Expand-Archive -Path "zen.zip" -DestinationPath "temp_extract" -Force
 
-          # Find folder containing zen.exe (handles nesting)
           $zenRoot = Get-ChildItem -Path "temp_extract" -Recurse -File -Filter "zen.exe" -ErrorAction SilentlyContinue |
                      Select-Object -First 1 | ForEach-Object { $_.DirectoryName }
 
           if (-not $zenRoot) {
-              Write-Error "zen.exe not found in extracted ZIP!"
+              Write-Error "zen.exe not found anywhere in extracted ZIP!"
               exit 1
           }
 
-          Write-Host "Found zen.exe in: $zenRoot - flattening to App\ZenBrowser"
-
+          Write-Host "Found zen.exe in: $zenRoot - moving contents to App\ZenBrowser"
           Copy-Item -Path "$zenRoot\*" -Destination "ZenBrowserPortable\App\ZenBrowser" -Recurse -Force
           Copy-Item -Path "$zenRoot\.*" -Destination "ZenBrowserPortable\App\ZenBrowser" -Force -ErrorAction SilentlyContinue
 
-          Write-Host "Files in App\ZenBrowser after extraction:"
+          Write-Host "Files now in App\ZenBrowser:"
           Get-ChildItem -Path "ZenBrowserPortable\App\ZenBrowser" -Recurse | Select-Object FullName
 
           Remove-Item -Path "temp_extract" -Recurse -Force -ErrorAction SilentlyContinue
@@ -119,19 +114,15 @@ jobs:
       - name: Create Help File
         shell: powershell
         run: |
-          Set-Content -Path "ZenBrowserPortable\help.html" -Value "<html><body><h1>Zen Browser Portable (Twilight)</h1><p>Built from latest Zen Twilight release.</p></body></html>"
+          Set-Content -Path "ZenBrowserPortable\help.html" -Value "<html><body><h1>Zen Browser Portable (Twilight)</h1><p>Built from Zen Twilight release.</p></body></html>"
 
       - name: Compile Launcher
         shell: cmd
         run: |
-          if not exist "Launcher.cs" (echo ERROR: Launcher.cs missing! & exit /b 1)
-          if not exist "appicon.ico" (echo ERROR: appicon.ico missing! & exit /b 1)
           copy appicon.ico ZenBrowserPortable\App\AppInfo\ >nul
           set CSC=%windir%\Microsoft.NET\Framework64\v4.0.30319\csc.exe
-          if not exist "%CSC%" (echo ERROR: csc.exe not found & exit /b 1)
           "%CSC%" /target:exe /out:ZenBrowserPortable\ZenBrowserPortable.exe /win32icon:appicon.ico /r:System.Windows.Forms.dll Launcher.cs
-          if %ERRORLEVEL% NEQ 0 (echo ERROR: Launcher compilation failed & exit /b 1)
-          echo Launcher compiled successfully
+          if %ERRORLEVEL% NEQ 0 (echo Launcher compilation failed & exit /b 1)
 
       - name: Generate PAF Icons
         shell: powershell
@@ -159,20 +150,20 @@ jobs:
       - name: Upload Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ env.VERSION }}  # keeps "twilight"
-          name: Zen Browser Portable Twilight - ${{ env.DISPLAY_VERSION }}  # clean title with version/date
+          tag_name: twilight-$(Get-Date -Format "yyyyMMdd-HHmm")  # e.g., twilight-20260130-0600
+          name: Zen Browser Portable Twilight - ${{ env.DISPLAY_VERSION }}
           body: |
             Automated portable build of the latest Zen Twilight release.
 
             - Upstream release: ${{ env.DISPLAY_VERSION }}
-            - Built on: ${{ github.run_started_at }} (UTC)
+            - Built on: $(Get-Date -Format "yyyy-MM-dd HH:mm UTC")
             - Portable launcher by G4uol
             - Updates disabled via policies.json
             - Extract and run ZenBrowserPortable.exe
 
             Always latest via daily schedule.
           files: ZenBrowserPortable_Twilight_*.zip
-          overwrite: true
+          overwrite: false  # Important: create new release instead of overwriting
           generate_release_notes: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
