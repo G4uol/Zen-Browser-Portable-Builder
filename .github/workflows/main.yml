@@ -2,7 +2,7 @@ name: Build Zen Browser Portable
 
 on:
   schedule:
-    - cron: '0 6 * * *'   # 06:00 UTC daily (≈06:00 London GMT / 07:00 BST)
+    - cron: '0 6 * * *'   # 06:00 UTC daily
   workflow_dispatch:
 
 jobs:
@@ -140,15 +140,17 @@ jobs:
       - name: Package to ZIP
         shell: powershell
         run: |
+          $timestamp = Get-Date -Format "yyyyMMdd-HHmm"
           $displayVer = $env:DISPLAY_VERSION -replace '[^a-zA-Z0-9.-]', '_'
-          $zipName = "ZenBrowserPortable_Twilight_${displayVer}.zip"
+          $zipName = "ZenBrowserPortable_Twilight_${displayVer}_${timestamp}.zip"
           Write-Host "Creating ZIP: $zipName"
           Compress-Archive -Path "ZenBrowserPortable" -DestinationPath $zipName -Force
+          echo "ZIP_NAME=$zipName" >> $env:GITHUB_ENV
 
       - name: Upload Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: twilight-$(Get-Date -Format "yyyyMMdd-HHmm")  # e.g., twilight-20260130-0600
+          tag_name: twilight-$(Get-Date -Format "yyyyMMdd-HHmm")  # Unique per run
           name: Zen Browser Portable Twilight - ${{ env.DISPLAY_VERSION }}
           body: |
             Automated portable build of the latest Zen Twilight release.
@@ -160,8 +162,8 @@ jobs:
             - Extract and run ZenBrowserPortable.exe
 
             Always latest via daily schedule.
-          files: ZenBrowserPortable_Twilight_*.zip
-          overwrite_files: false  # Explicit: do not overwrite assets (new tag anyway)
+          files: ${{ env.ZIP_NAME }}  # Use the unique ZIP name
+          overwrite_files: true       # Allow overwrite if rare collision
           generate_release_notes: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
