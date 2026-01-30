@@ -156,12 +156,22 @@ jobs:
           Write-Host "Creating ZIP: $zipName"
           Compress-Archive -Path "ZenBrowserPortable" -DestinationPath $zipName -Force
 
-      - name: Upload Release
+            - name: Upload Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ env.VERSION }}
-          name: Zen Browser Portable ${{ env.VERSION }}
+          tag_name: ${{ env.VERSION }}               # keeps "twilight"
+                    name: Zen Browser Portable Twilight - ${{ env.DISPLAY_VERSION }}        # Fixed/custom title (shows instead of commit msg)
+          body: |
+            Automated portable build of the latest Zen Twilight release.
+            
+            - Upstream release: ${{ env.DISPLAY_VERSION }}
+            - Built on: $(date +"%Y-%m-%d %H:%M UTC")
+            - Portable launcher by G4uol
+            - No built-in updates (disabled via policies)
+            
+            Download the ZIP and extract to run `ZenBrowserPortable.exe`.
           files: ZenBrowserPortable_Twilight_*.zip
           overwrite: true
+          generate_release_notes: false              # Optional: disable auto-notes if you want clean body only
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
