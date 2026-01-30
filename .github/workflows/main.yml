@@ -2,7 +2,7 @@ name: Build Zen Browser Portable
 
 on:
   schedule:
-    - cron: '0 6 * * *'
+    - cron: '0 6 * * *'   # 06:00 UTC daily
   workflow_dispatch:
 
 jobs:
@@ -147,23 +147,28 @@ jobs:
           Compress-Archive -Path "ZenBrowserPortable" -DestinationPath $zipName -Force
           echo "ZIP_NAME=$zipName" >> $env:GITHUB_ENV
 
-      - name: Upload Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: twilight-$(Get-Date -Format "yyyyMMdd-HHmm")
-          name: Zen Browser Portable Twilight - ${{ env.DISPLAY_VERSION }}
-          body: |
-            Automated portable build of the latest Zen Twilight release.
-
-            - Upstream release: ${{ env.DISPLAY_VERSION }}
-            - Built on: $(Get-Date -Format "yyyy-MM-dd HH:mm UTC")
-            - Portable launcher by G4uol
-            - Updates disabled via policies.json
-            - Extract and run ZenBrowserPortable.exe
-
-            Always latest via daily schedule.
-          files: ${{ env.ZIP_NAME }}
-          overwrite_files: true  # Allows force-upload if transient conflict
-          generate_release_notes: false
+      - name: Create and Upload Release with gh CLI
+        shell: powershell
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $timestamp = Get-Date -Format "yyyyMMdd-HHmm"
+          $tag = "twilight-${timestamp}"
+          $title = "Zen Browser Portable Twilight - $($env:DISPLAY_VERSION)"
+          $body = @"
+          Automated portable build of the latest Zen Twilight release.
+
+          - Upstream release: $($env:DISPLAY_VERSION)
+          - Built on: $(Get-Date -Format "yyyy-MM-dd HH:mm UTC")
+          - Portable launcher by G4uol
+          - Updates disabled via policies.json
+          - Extract and run ZenBrowserPortable.exe
+
+          Always latest via daily schedule.
+          "@
+
+          gh release create $tag `
+            --title $title `
+            --notes $body `
+            --target main `
+            "$($env:ZIP_NAME)"
