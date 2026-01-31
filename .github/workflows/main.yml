@@ -82,7 +82,7 @@ jobs:
           if ($current -and ($current -ne $last)) {
             Write-Host "New upstream release detected: $current"
 
-            # Build a simple issue body without using PowerShell here-strings (YAML-safe)
+            # Build an issue body (YAML-safe, no here-strings required)
             $repo = "${{ github.repository }}"
             $title = "Upstream Zen release detected: $current"
             $bodyLines = @(
@@ -111,9 +111,18 @@ jobs:
 
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
             git add $marker
-            git commit -m "chore(ci): record upstream release $current" || Write-Host "No changes to commit"
-            git push origin "HEAD:${{ github.ref_name }}"
+            git commit -m "chore(ci): record upstream release $current"
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "git commit exited with code $LASTEXITCODE (likely: no changes to commit). Skipping push."
+            } else {
+              Write-Host "Commit created; pushing marker to remote."
+              git push origin "HEAD:${{ github.ref_name }}"
+              if ($LASTEXITCODE -ne 0) {
+                Write-Host "git push failed with exit code $LASTEXITCODE"
+              }
+            }
           } else {
             Write-Host "No new upstream release (nothing to do)."
           }
