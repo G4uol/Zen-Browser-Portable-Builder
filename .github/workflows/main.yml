@@ -62,71 +62,6 @@ jobs:
           echo "PACKAGE_VERSION=$safeVer" >> $env:GITHUB_ENV
           echo "DISPLAY_VERSION=$displayName" >> $env:GITHUB_ENV
 
-      - name: Notify on new upstream release
-        shell: powershell
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          # file where we record last seen upstream release
-          $marker = ".github/last_upstream_release.txt"
-          if (Test-Path $marker) {
-            $last = Get-Content $marker -Raw
-          } else {
-            $last = ""
-          }
-
-          $current = $env:VERSION
-          Write-Host "Last seen upstream release: '$last'"
-          Write-Host "Current upstream release: '$current'"
-
-          if ($current -and ($current -ne $last)) {
-            Write-Host "New upstream release detected: $current"
-
-            # Build an issue body (YAML-safe, no here-strings required)
-            $repo = "${{ github.repository }}"
-            $title = "Upstream Zen release detected: $current"
-            $bodyLines = @(
-              "Upstream Zen Desktop release detected: $current"
-              ""
-              "Upstream display name: $($env:DISPLAY_VERSION)"
-              "Build will be created automatically by CI."
-              ""
-              "(Automated notification from GitHub Actions workflow)"
-            )
-            $body = ($bodyLines -join "`n")
-
-            $issue = @{ title = $title; body = $body } | ConvertTo-Json
-            $headers = @{ Authorization = "token $env:GH_TOKEN"; Accept = "application/vnd.github+json" }
-
-            try {
-              Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/issues" -Method Post -Headers $headers -Body $issue -ContentType "application/json"
-              Write-Host "Issue created for upstream release $current"
-            } catch {
-              Write-Host "Failed to create issue: $($_.Exception.Message)"
-            }
-
-            # Record the new release in the repo so future runs can detect new ones
-            New-Item -ItemType Directory -Force -Path ".github" | Out-Null
-            Set-Content -Path $marker -Value $current -Force
-
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-            git add $marker
-            git commit -m "chore(ci): record upstream release $current"
-            if ($LASTEXITCODE -ne 0) {
-              Write-Host "git commit exited with code $LASTEXITCODE (likely: no changes to commit). Skipping push."
-            } else {
-              Write-Host "Commit created; pushing marker to remote."
-              git push origin "HEAD:${{ github.ref_name }}"
-              if ($LASTEXITCODE -ne 0) {
-                Write-Host "git push failed with exit code $LASTEXITCODE"
-              }
-            }
-          } else {
-            Write-Host "No new upstream release (nothing to do)."
-          }
-
       - name: Extract Zip
         shell: powershell
         run: |
@@ -231,7 +166,6 @@ jobs:
 
           Always latest via daily schedule.
           "@
-
           gh release create $tag `
             --title $title `
             --notes $body `
