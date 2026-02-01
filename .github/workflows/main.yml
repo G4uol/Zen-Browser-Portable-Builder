@@ -20,18 +20,10 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Cache-busting query param to force fresh API response
-          $cacheBuster = Get-Random
-          $url = "https://api.github.com/repos/zen-browser/desktop/releases/tags/twilight?_=$cacheBuster"
-          $headers = @{
-              "Authorization" = "token $env:GH_TOKEN"
-              "Cache-Control" = "no-cache, no-store, must-revalidate"
-              "Pragma" = "no-cache"
-              "Expires" = "0"
-          }
-
+          $url = "https://api.github.com/repos/zen-browser/desktop/releases/tags/twilight"
+          $headers = @{ "Authorization" = "token $env:GH_TOKEN" }
           try {
-              $release = Invoke-RestMethod -Uri $url -Method Get -Headers $headers -UseBasicParsing
+              $release = Invoke-RestMethod -Uri $url -Method Get -Headers $headers
           } catch {
               Write-Error "API Error: $($_.Exception.Message)"
               exit 1
@@ -40,14 +32,20 @@ jobs:
           $downloadUrl = ""
           $tagVersion = $release.tag_name
           $displayName = $release.name
-          $upstreamUpdated = $release.updated_at
 
-          # More precise: use asset updated_at for change detection
-          $assetUpdated = ""
+          if ($displayName -match '(\d+\.\d+[a-z]?)') {
+              $buildVer = $matches[1]
+          } else {
+              $buildVer = "0.0"
+          }
+
+          $safeVer = $buildVer -replace '[a-z]', ''
+          while (($safeVer.ToCharArray() | Where-Object { $_ -eq '.' }).Count -lt 3) { $safeVer += ".0" }
+          if ($safeVer.StartsWith('.')) { $safeVer = "0" + $safeVer }
+
           foreach ($asset in $release.assets) {
               if ($asset.name -eq "zen.win-x86_64.zip") {
                   $downloadUrl = $asset.browser_download_url
-                  $assetUpdated = $asset.updated_at
                   break
               }
           }
@@ -57,39 +55,29 @@ jobs:
               exit 1
           }
 
-          Write-Host "Target tag: $tagVersion"
-          Write-Host "Display name: $displayName"
-          Write-Host "Release updated_at: $upstreamUpdated"
-          Write-Host "Asset updated_at: $assetUpdated"
-
-          # Download with no cache
-          Invoke-WebRequest -Uri $downloadUrl -OutFile "zen.zip" -UseBasicParsing -Headers @{ "Cache-Control" = "no-cache" }
-
-          # Debug: show downloaded file details
-          $fileInfo = Get-Item "zen.zip"
-          Write-Host "Downloaded zen.zip size: $($fileInfo.Length) bytes"
-          Write-Host "Last write time: $($fileInfo.LastWriteTimeUtc)"
+          Write-Host "Target tag: $tagVersion, Build: $buildVer, Safe package version: $safeVer"
+          Invoke-WebRequest -Uri $downloadUrl -OutFile "zen.zip"
 
           echo "VERSION=$tagVersion" >> $env:GITHUB_ENV
           echo "PACKAGE_VERSION=$safeVer" >> $env:GITHUB_ENV
           echo "DISPLAY_VERSION=$displayName" >> $env:GITHUB_ENV
-          echo "ASSET_UPDATED=$assetUpdated" >> $env:GITHUB_ENV
 
       - name: Check if upstream changed
         shell: powershell
+        continue-on-error: true  # Prevents parse/commit failure from halting workflow
         run: |
-          $marker = ".github/last_upstream_asset_updated.txt"
+          $marker = ".github/last_upstream_updated.txt"
           $lastUpdated = if (Test-Path $marker) { Get-Content $marker -Raw } else { "" }
-          $currentUpdated = $env:ASSET_UPDATED
+          $currentUpdated = $env:UPSTREAM_UPDATED  # Set in previous step
 
-          Write-Host "Last known asset updated_at: $lastUpdated"
-          Write-Host "Current asset updated_at: $currentUpdated"
+          Write-Host "Last known upstream updated_at: $lastUpdated"
+          Write-Host "Current upstream updated_at: $currentUpdated"
 
           if ($currentUpdated -eq $lastUpdated) {
-              Write-Host "No change in upstream Twilight asset. Skipping build."
+              Write-Host "No change in upstream Twilight release. Skipping build."
               echo "SKIP_BUILD=true" >> $env:GITHUB_ENV
           } else {
-              Write-Host "Upstream Twilight asset updated - proceeding with build."
+              Write-Host "Upstream Twilight updated - proceeding with build."
               echo "SKIP_BUILD=false" >> $env:GITHUB_ENV
 
               # Update marker
@@ -99,12 +87,17 @@ jobs:
               git config user.name "github-actions[bot]"
               git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
               git add $marker
-              git commit -m "chore(ci): update last upstream asset timestamp to $currentUpdated" || {
-                  Write-Host "Commit failed (no changes). Skipping push."
-              }
 
-              git push origin "HEAD:${{ github.ref_name }}" || {
-                  Write-Host "Push failed. Continuing anyway."
+              # Proper PowerShell error check (no ||)
+              git commit -m "chore(ci): update last upstream timestamp to $currentUpdated"
+              if ($LASTEXITCODE -ne 0) {
+                  Write-Host "Commit failed (likely no changes). Skipping push."
+              } else {
+                  Write-Host "Commit succeeded. Pushing changes."
+                  git push origin "HEAD:${{ github.ref_name }}"
+                  if ($LASTEXITCODE -ne 0) {
+                      Write-Host "Push failed. Continuing workflow anyway."
+                  }
               }
           }
 
@@ -112,4 +105,32 @@ jobs:
         if: env.SKIP_BUILD == 'true'
         run: exit 0
 
-      # ... (rest of your steps: Extract Zip, Configure App, Create Help File, Compile Launcher, Generate PAF Icons, Package to ZIP, Create and Upload Release with gh CLI remain the same)
+      # All following steps are your standard build process...
+      - name: Extract Zip
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Force -Path "ZenBrowserPortable\App\ZenBrowser"
+          New-Item -ItemType Directory -Force -Path "ZenBrowserPortable\App\AppInfo"
+          New-Item -ItemType Directory -Force -Path "ZenBrowserPortable\Data"
+          New-Item -ItemType Directory -Force -Path "ZenBrowserPortable\Other\Source"
+
+          Expand-Archive -Path "zen.zip" -DestinationPath "temp_extract" -Force
+
+          $zenRoot = Get-ChildItem -Path "temp_extract" -Recurse -File -Filter "zen.exe" -ErrorAction SilentlyContinue |
+                     Select-Object -First 1 | ForEach-Object { $_.DirectoryName }
+
+          if (-not $zenRoot) {
+              Write-Error "zen.exe not found anywhere in extracted ZIP!"
+              exit 1
+          }
+
+          Write-Host "Found zen.exe in: $zenRoot - moving contents to App\ZenBrowser"
+          Copy-Item -Path "$zenRoot\*" -Destination "ZenBrowserPortable\App\ZenBrowser" -Recurse -Force
+          Copy-Item -Path "$zenRoot\.*" -Destination "ZenBrowserPortable\App\ZenBrowser" -Force -ErrorAction SilentlyContinue
+
+          Write-Host "Files now in App\ZenBrowser:"
+          Get-ChildItem -Path "ZenBrowserPortable\App\ZenBrowser" -Recurse | Select-Object FullName
+
+          Remove-Item -Path "temp_extract" -Recurse -Force -ErrorAction SilentlyContinue
+
+      # ... (keep the rest of your steps: Configure App, Create Help File, Compile Launcher, Generate PAF Icons, Package to ZIP, Create and Upload Release with gh CLI exactly as they are in your current file)
