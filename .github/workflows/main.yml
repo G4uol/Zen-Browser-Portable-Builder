@@ -89,17 +89,17 @@ jobs:
               git config user.name "github-actions[bot]"
               git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
               git add $marker
-              git commit -m "chore(ci): update last upstream timestamp to $currentUpdated"
-
-              if ($LASTEXITCODE -ne 0) {
+              git commit -m "chore(ci): update last upstream timestamp to $currentUpdated" || {
                   Write-Host "Commit failed (no changes). Skipping push."
-              } else {
-                  git push origin "HEAD:${{ github.ref_name }}"
-                  if ($LASTEXITCODE -ne 0) {
-                      Write-Host "Push failed. Continuing anyway."
-                  }
+                  exit 0  # Force success
+              }
+
+              git push origin "HEAD:${{ github.ref_name }}" || {
+                  Write-Host "Push failed. Continuing anyway."
+                  exit 0  # Force success
               }
           }
+          exit 0  # Always succeed this step
 
       - name: Exit early if no change
         if: env.SKIP_BUILD == 'true'
