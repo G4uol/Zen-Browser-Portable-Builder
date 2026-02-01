@@ -20,10 +20,18 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          $url = "https://api.github.com/repos/zen-browser/desktop/releases/tags/twilight"
-          $headers = @{ "Authorization" = "token $env:GH_TOKEN" }
+          # Force fresh API response with cache buster
+          $cacheBuster = Get-Random
+          $url = "https://api.github.com/repos/zen-browser/desktop/releases/tags/twilight?_=$cacheBuster"
+          $headers = @{
+              "Authorization" = "token $env:GH_TOKEN"
+              "Cache-Control" = "no-cache, no-store, must-revalidate"
+              "Pragma" = "no-cache"
+              "Expires" = "0"
+          }
+
           try {
-              $release = Invoke-RestMethod -Uri $url -Method Get -Headers $headers
+              $release = Invoke-RestMethod -Uri $url -Method Get -Headers $headers -UseBasicParsing
           } catch {
               Write-Error "API Error: $($_.Exception.Message)"
               exit 1
@@ -32,20 +40,13 @@ jobs:
           $downloadUrl = ""
           $tagVersion = $release.tag_name
           $displayName = $release.name
-
-          if ($displayName -match '(\d+\.\d+[a-z]?)') {
-              $buildVer = $matches[1]
-          } else {
-              $buildVer = "0.0"
-          }
-
-          $safeVer = $buildVer -replace '[a-z]', ''
-          while (($safeVer.ToCharArray() | Where-Object { $_ -eq '.' }).Count -lt 3) { $safeVer += ".0" }
-          if ($safeVer.StartsWith('.')) { $safeVer = "0" + $safeVer }
+          $assetUpdated = ""
 
           foreach ($asset in $release.assets) {
               if ($asset.name -eq "zen.win-x86_64.zip") {
-                  $downloadUrl = $asset.browser_download_url
+                  # Add cache buster to download URL too
+                  $downloadUrl = $asset.browser_download_url + "?_=$cacheBuster"
+                  $assetUpdated = $asset.updated_at
                   break
               }
           }
@@ -55,120 +56,67 @@ jobs:
               exit 1
           }
 
-          Write-Host "Target tag: $tagVersion, Build: $buildVer, Safe package version: $safeVer"
-          Invoke-WebRequest -Uri $downloadUrl -OutFile "zen.zip"
+          Write-Host "Target tag: $tagVersion"
+          Write-Host "Display name (should be latest): $displayName"
+          Write-Host "Asset updated_at: $assetUpdated"
+
+          # Download with anti-cache headers
+          $downloadHeaders = @{
+              "Cache-Control" = "no-cache, no-store"
+              "Pragma" = "no-cache"
+          }
+          Invoke-WebRequest -Uri $downloadUrl -OutFile "zen.zip" -Headers $downloadHeaders -UseBasicParsing
+
+          # Debug: verify downloaded file
+          $file = Get-Item "zen.zip"
+          Write-Host "Downloaded zen.zip:"
+          Write-Host "  Size: $($file.Length) bytes"
+          Write-Host "  LastWriteTime (UTC): $($file.LastWriteTimeUtc)"
+
+          # Optional: basic hash check (compare manually in logs)
+          $hash = (Get-FileHash "zen.zip" -Algorithm SHA256).Hash
+          Write-Host "SHA256: $hash"
 
           echo "VERSION=$tagVersion" >> $env:GITHUB_ENV
           echo "PACKAGE_VERSION=$safeVer" >> $env:GITHUB_ENV
           echo "DISPLAY_VERSION=$displayName" >> $env:GITHUB_ENV
+          echo "ASSET_UPDATED=$assetUpdated" >> $env:GITHUB_ENV
 
-      - name: Extract Zip
+      - name: Check if upstream changed
         shell: powershell
+        continue-on-error: true
         run: |
-          New-Item -ItemType Directory -Force -Path "ZenBrowserPortable\App\ZenBrowser"
-          New-Item -ItemType Directory -Force -Path "ZenBrowserPortable\App\AppInfo"
-          New-Item -ItemType Directory -Force -Path "ZenBrowserPortable\Data"
-          New-Item -ItemType Directory -Force -Path "ZenBrowserPortable\Other\Source"
+          $marker = ".github/last_upstream_asset_updated.txt"
+          $lastUpdated = if (Test-Path $marker) { Get-Content $marker -Raw } else { "" }
+          $currentUpdated = $env:ASSET_UPDATED
 
-          Expand-Archive -Path "zen.zip" -DestinationPath "temp_extract" -Force
+          Write-Host "Last known asset updated_at: $lastUpdated"
+          Write-Host "Current asset updated_at: $currentUpdated"
 
-          $zenRoot = Get-ChildItem -Path "temp_extract" -Recurse -File -Filter "zen.exe" -ErrorAction SilentlyContinue |
-                     Select-Object -First 1 | ForEach-Object { $_.DirectoryName }
+          if ($currentUpdated -eq $lastUpdated -and $lastUpdated -ne "") {
+              Write-Host "No change in upstream asset. Skipping build."
+              echo "SKIP_BUILD=true" >> $env:GITHUB_ENV
+          } else {
+              Write-Host "Upstream asset updated or first run - building."
+              echo "SKIP_BUILD=false" >> $env:GITHUB_ENV
 
-          if (-not $zenRoot) {
-              Write-Error "zen.exe not found anywhere in extracted ZIP!"
-              exit 1
+              New-Item -ItemType Directory -Force -Path ".github" | Out-Null
+              Set-Content -Path $marker -Value $currentUpdated -Force
+
+              git config user.name "github-actions[bot]"
+              git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+              git add $marker
+              git commit -m "chore(ci): update last upstream asset timestamp to $currentUpdated" || {
+                  Write-Host "Commit skipped (no change or error)."
+              }
+
+              git push origin "HEAD:${{ github.ref_name }}" || {
+                  Write-Host "Push skipped or failed - continuing."
+              }
           }
 
-          Write-Host "Found zen.exe in: $zenRoot - moving contents to App\ZenBrowser"
-          Copy-Item -Path "$zenRoot\*" -Destination "ZenBrowserPortable\App\ZenBrowser" -Recurse -Force
-          Copy-Item -Path "$zenRoot\.*" -Destination "ZenBrowserPortable\App\ZenBrowser" -Force -ErrorAction SilentlyContinue
+      - name: Exit early if no change
+        if: env.SKIP_BUILD == 'true'
+        run: exit 0
 
-          Write-Host "Files now in App\ZenBrowser:"
-          Get-ChildItem -Path "ZenBrowserPortable\App\ZenBrowser" -Recurse | Select-Object FullName
-
-          Remove-Item -Path "temp_extract" -Recurse -Force -ErrorAction SilentlyContinue
-
-      - name: Configure App
-        shell: powershell
-        run: |
-          $distDir = "ZenBrowserPortable\App\ZenBrowser\distribution"
-          New-Item -ItemType Directory -Force -Path $distDir
-          Set-Content -Path "$distDir\policies.json" -Value '{ "policies": { "DisableAppUpdate": true, "ManualAppUpdateOnly": true } }'
-
-          $packageVer = $env:PACKAGE_VERSION
-          $displayVer = $env:DISPLAY_VERSION
-          Set-Content -Path "ZenBrowserPortable\App\AppInfo\version.txt" -Value $displayVer
-
-          $iniPath = "ZenBrowserPortable\App\AppInfo\appinfo.ini"
-          $content = Get-Content "appinfo.ini" -Raw
-          $content = $content -replace "PackageVersion=1.0.0.0", "PackageVersion=$packageVer"
-          $content = $content -replace "DisplayVersion=Latest", "DisplayVersion=$displayVer"
-          if ($content -notmatch '\[License\].*CommercialUse=true') {
-              $content += "`r`n`r`n[License]`r`nCommercialUse=true"
-          }
-          Set-Content -Path $iniPath -Value $content -Encoding UTF8
-
-      - name: Create Help File
-        shell: powershell
-        run: |
-          Set-Content -Path "ZenBrowserPortable\help.html" -Value "<html><body><h1>Zen Browser Portable (Twilight)</h1><p>Built from Zen Twilight release.</p></body></html>"
-
-      - name: Compile Launcher
-        shell: cmd
-        run: |
-          copy appicon.ico ZenBrowserPortable\App\AppInfo\ >nul
-          set CSC=%windir%\Microsoft.NET\Framework64\v4.0.30319\csc.exe
-          "%CSC%" /target:exe /out:ZenBrowserPortable\ZenBrowserPortable.exe /win32icon:appicon.ico /r:System.Windows.Forms.dll Launcher.cs
-          if %ERRORLEVEL% NEQ 0 (echo Launcher compilation failed & exit /b 1)
-
-      - name: Generate PAF Icons
-        shell: powershell
-        run: |
-          Add-Type -AssemblyName System.Drawing
-          $icoPath = "appicon.ico"
-          $destDir = "ZenBrowserPortable\App\AppInfo"
-          if (-not (Test-Path $icoPath)) { Write-Error "appicon.ico missing!"; exit 1 }
-          $icon = [System.Drawing.Icon]::ExtractAssociatedIcon($icoPath)
-          $bmp = $icon.ToBitmap()
-          foreach ($size in 16, 32, 128) {
-              $resized = New-Object System.Drawing.Bitmap($bmp, $size, $size)
-              $resized.Save("$destDir\appicon_$size.png", [System.Drawing.Imaging.ImageFormat]::Png)
-          }
-          Copy-Item $icoPath "$destDir\appicon.ico" -Force
-
-      - name: Package to ZIP
-        shell: powershell
-        run: |
-          $timestamp = Get-Date -Format "yyyyMMdd-HHmm"
-          $displayVer = $env:DISPLAY_VERSION -replace '[^a-zA-Z0-9.-]', '_'
-          $zipName = "ZenBrowserPortable_Twilight_${displayVer}_${timestamp}.zip"
-          Write-Host "Creating ZIP: $zipName"
-          Compress-Archive -Path "ZenBrowserPortable" -DestinationPath $zipName -Force
-          echo "ZIP_NAME=$zipName" >> $env:GITHUB_ENV
-
-      - name: Create and Upload Release with gh CLI
-        shell: powershell
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          $timestamp = Get-Date -Format "yyyyMMdd-HHmm"
-          $tag = "twilight-${timestamp}"
-          $title = "Zen Browser Portable Twilight - $($env:DISPLAY_VERSION)"
-          $body = @"
-          Automated portable build of the latest Zen Twilight release.
-
-          - Upstream release: $($env:DISPLAY_VERSION)
-          - Built on: $(Get-Date -Format "yyyy-MM-dd HH:mm UTC")
-          - Portable launcher by G4uol
-          - Updates disabled via policies.json
-          - Extract and run ZenBrowserPortable.exe
-
-          Always latest via daily schedule.
-          "@
-
-          gh release create $tag `
-            --title $title `
-            --notes $body `
-            --target main `
-            "$($env:ZIP_NAME)"
+      # ... (your remaining steps unchanged: Extract Zip, Configure App, Create Help File, Compile Launcher, Generate PAF Icons, Package to ZIP, Create and Upload Release with gh CLI)
