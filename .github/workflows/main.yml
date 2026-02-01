@@ -82,7 +82,7 @@ jobs:
               Write-Host "Upstream Twilight updated - proceeding with build."
               echo "SKIP_BUILD=false" >> $env:GITHUB_ENV
 
-              # Update marker
+              # Update marker for next run
               New-Item -ItemType Directory -Force -Path ".github" | Out-Null
               Set-Content -Path $marker -Value $currentUpdated -Force
 
@@ -103,7 +103,6 @@ jobs:
 
       - name: Exit early if no change
         if: env.SKIP_BUILD == 'true'
-        shell: powershell
         run: exit 0
 
       - name: Extract Zip
